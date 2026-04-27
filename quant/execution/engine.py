@@ -5,6 +5,7 @@ from dataclasses import dataclass
 @dataclass
 class Order:
     id: int
+    symbol: str
     side: str
     status: str
     qty: float
@@ -57,16 +58,18 @@ class ExecutionEngine:
     POSITION_OPEN = "POSITION_OPEN"
     EXIT = "EXIT"
 
-    def __init__(self, execution_delay=0, seed=1):
+    def __init__(self, execution_delay=0, seed=1, account=None, delay_across_bars=False):
         if execution_delay < 0 or execution_delay > 1:
             raise ValueError("execution_delay must be 0 or 1")
 
         self.execution_delay = execution_delay
+        self.delay_across_bars = delay_across_bars
         self.random = random.Random(seed)
         self.state = self.IDLE
         self.orders = []
         self.pending_orders = []
         self.position = Position()
+        self.account = account
         self.last_order_status = None
         self.next_order_id = 1
 
@@ -105,13 +108,14 @@ class ExecutionEngine:
 
         order = Order(
             id=self.next_order_id,
+            symbol=signal.get("symbol", "DEFAULT"),
             side=side,
             status="pending",
             qty=signal.get("quantity", 1.0),
             filled_qty=0.0,
             price=price,
             created_index=index,
-            execute_index=index,
+            execute_index=index + 1 if self.delay_across_bars and self.execution_delay == 1 else index,
         )
         self.next_order_id += 1
         return order
@@ -146,11 +150,16 @@ class ExecutionEngine:
         if self.position.size != 0.0:
             self.state = self.POSITION_OPEN
 
-        return self._order_result(order, fill_price=fill_price, slippage=slippage, fill_index=index)
+        result = self._order_result(order, fill_price=fill_price, slippage=slippage, fill_index=index)
+        if self.account is not None:
+            self.account.on_fill(result)
+        return result
 
     def _order_result(self, order, fill_price=None, slippage=0.0, fill_index=None):
         result = {
             "order_id": order.id,
+            "symbol": order.symbol,
+            "side": order.side,
             "status": order.status,
             "filled_qty": order.filled_qty,
             "remaining_qty": order.qty - order.filled_qty,
