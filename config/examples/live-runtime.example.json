@@ -1,0 +1,104 @@
+{
+  "name": "live-btc-usdt-okx-readiness",
+  "source": "live",
+  "markets": [
+    {
+      "symbol": "BTC-USDT",
+      "timeframe": "1m",
+      "asset_class": "crypto",
+      "enabled": true,
+      "provider": "okx_public",
+      "metadata": {
+        "venue": "okx",
+        "instrument_type": "SPOT"
+      }
+    }
+  ],
+  "strategies": [
+    {
+      "symbol": "BTC-USDT",
+      "strategy": "ma_crossover",
+      "route": "default",
+      "version": "1.0",
+      "parameters": {
+        "fast_window": 5,
+        "slow_window": 21,
+        "strategy_id": "live_btc_ma_guarded"
+      },
+      "routes": [
+        {
+          "route": "trend",
+          "strategy": "ma_crossover",
+          "version": "1.0",
+          "parameters": {
+            "fast_window": 5,
+            "slow_window": 21,
+            "strategy_id": "live_btc_ma_trend"
+          }
+        },
+        {
+          "route": "default",
+          "strategy": "ma_crossover",
+          "version": "1.0",
+          "parameters": {
+            "fast_window": 8,
+            "slow_window": 34,
+            "strategy_id": "live_btc_ma_fallback"
+          }
+        }
+      ]
+    }
+  ],
+  "risk": {
+    "risk_plugin": "default",
+    "kill_switch_enabled": true,
+    "daily_loss_limit_pct": 0.02,
+    "consecutive_loss_limit": 2,
+    "api_failure_rate_limit": 0.15,
+    "max_position_size": 0.1,
+    "max_drawdown": 0.06,
+    "per_symbol_limits": {
+      "BTC-USDT": 0.1
+    }
+  },
+  "broker": {
+    "mode": "live",
+    "broker_plugin": "okx_broker",
+    "account_id": "LIVE_ACCOUNT_PLACEHOLDER",
+    "order_log_path": "logs/live/orders.jsonl",
+    "settings": {
+      "venue": "okx",
+      "td_mode": "cash",
+      "target_currency": "base_ccy",
+      "api_key_env": "OKX_API_KEY",
+      "api_secret_env": "OKX_API_SECRET",
+      "api_passphrase_env": "OKX_API_PASSPHRASE",
+      "allow_live_orders": false,
+      "require_manual_preflight": true
+    }
+  },
+  "logging": {
+    "decision_log_path": "logs/live/decisions.jsonl",
+    "order_log_path": "logs/live/orders.jsonl",
+    "fill_log_path": "logs/live/fills.jsonl",
+    "pipeline_report_dir": "logs/live/pipeline-runs"
+  },
+  "scan": {
+    "enabled": true,
+    "interval_seconds": 600,
+    "candidate_symbols": [
+      "BTC-USDT"
+    ],
+    "holding_symbols": [
+      "BTC-USDT"
+    ],
+    "default_timeframe": "1m"
+  },
+  "registry_plugins": {},
+  "metadata": {
+    "initial_balance": 10000.0,
+    "environment": "live",
+    "contains_real_credentials": false,
+    "requires_explicit_preflight": true
+  }
+}

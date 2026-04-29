@@ -7,6 +7,7 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from quant.data.providers.mock_provider import MockProvider
 from quant.data.schemas.market import Kline, Trade
+from quant.data.storage import JsonlKlineStore
 
 
 def test_kline_schema():
@@ -75,3 +76,43 @@ def test_mock_provider_trades():
     assert all(isinstance(trade.side, str) for trade in trades)
     assert all(trades[index].timestamp < trades[index + 1].timestamp for index in range(len(trades) - 1))
     assert all(trade.side in ["buy", "sell"] for trade in trades)
+
+
+def test_jsonl_kline_store_round_trip(tmp_path):
+    provider = MockProvider()
+    store = JsonlKlineStore(tmp_path)
+    klines = provider.get_klines(symbol="BTCUSDT", timeframe="1m")
+
+    saved_count = store.save_klines(symbol="BTCUSDT", timeframe="1m", klines=reversed(klines))
+    loaded = store.load_klines(symbol="BTCUSDT", timeframe="1m")
+
+    assert saved_count == len(klines)
+    assert loaded == klines
+
+
+def test_jsonl_kline_store_filters_timestamp_range(tmp_path):
+    provider = MockProvider()
+    store = JsonlKlineStore(tmp_path)
+    klines = provider.get_klines(symbol="BTCUSDT", timeframe="1m")
+    store.save_klines(symbol="BTCUSDT", timeframe="1m", klines=klines)
+
+    loaded = store.load_klines(
+        symbol="BTCUSDT",
+        timeframe="1m",
+        start_ts=klines[2].timestamp,
+        end_ts=klines[4].timestamp,
+    )
+
+    assert loaded == klines[2:5]
+
+
+def test_jsonl_kline_store_deduplicates_by_timestamp(tmp_path):
+    provider = MockProvider()
+    store = JsonlKlineStore(tmp_path)
+    klines = provider.get_klines(symbol="BTCUSDT", timeframe="1m")
+
+    saved_count = store.save_klines(symbol="BTCUSDT", timeframe="1m", klines=[klines[0], klines[0], klines[1]])
+    loaded = store.load_klines(symbol="BTCUSDT", timeframe="1m")
+
+    assert saved_count == 2
+    assert loaded == klines[:2]

@@ -11,6 +11,12 @@ from quant.data.schemas.market import Kline, Trade
 from quant.features import time_guard
 from quant.features.indicators.moving_average import MovingAverage
 from quant.features.indicators.orderflow_imbalance import OrderFlowImbalance
+from quant.features.indicators.technical import (
+    AverageTrueRange,
+    ExponentialMovingAverage,
+    MovingAverageConvergenceDivergence,
+    RelativeStrengthIndex,
+)
 
 
 def test_moving_average_length():
@@ -150,3 +156,72 @@ def test_orderflow_imbalance_negative():
     value = OrderFlowImbalance().compute(trades)
 
     assert value == -4.0
+
+
+def test_ema_computes_after_window_and_ignores_future_data():
+    klines = [
+        Kline(timestamp=1, open=1.0, high=1.0, low=1.0, close=1.0, volume=10.0),
+        Kline(timestamp=2, open=2.0, high=2.0, low=2.0, close=2.0, volume=10.0),
+        Kline(timestamp=3, open=3.0, high=3.0, low=3.0, close=3.0, volume=10.0),
+        Kline(timestamp=4, open=4.0, high=4.0, low=4.0, close=4.0, volume=10.0),
+        Kline(timestamp=5, open=1000.0, high=1000.0, low=1000.0, close=1000.0, volume=10.0),
+    ]
+
+    ema = ExponentialMovingAverage(window=3)
+
+    assert ema.compute(klines, 1) is None
+    assert ema.compute(klines, 2) == 2.0
+    assert ema.compute(klines, 3) == 3.0
+
+
+def test_rsi_handles_gain_loss_window():
+    klines = [
+        Kline(timestamp=1, open=10.0, high=10.0, low=10.0, close=10.0, volume=10.0),
+        Kline(timestamp=2, open=12.0, high=12.0, low=12.0, close=12.0, volume=10.0),
+        Kline(timestamp=3, open=11.0, high=11.0, low=11.0, close=11.0, volume=10.0),
+        Kline(timestamp=4, open=14.0, high=14.0, low=14.0, close=14.0, volume=10.0),
+    ]
+
+    value = RelativeStrengthIndex(window=3).compute(klines, 3)
+
+    assert round(value, 2) == 83.33
+
+
+def test_rsi_returns_100_when_no_losses():
+    klines = [
+        Kline(timestamp=1, open=10.0, high=10.0, low=10.0, close=10.0, volume=10.0),
+        Kline(timestamp=2, open=11.0, high=11.0, low=11.0, close=11.0, volume=10.0),
+        Kline(timestamp=3, open=12.0, high=12.0, low=12.0, close=12.0, volume=10.0),
+        Kline(timestamp=4, open=13.0, high=13.0, low=13.0, close=13.0, volume=10.0),
+    ]
+
+    value = RelativeStrengthIndex(window=3).compute(klines, 3)
+
+    assert value == 100.0
+
+
+def test_macd_returns_replayable_components():
+    klines = [
+        Kline(timestamp=index, open=float(index), high=float(index), low=float(index), close=float(index), volume=10.0)
+        for index in range(1, 8)
+    ]
+
+    value = MovingAverageConvergenceDivergence(fast_window=2, slow_window=3, signal_window=2).compute(klines, 6)
+
+    assert set(value) == {"macd", "signal", "histogram"}
+    assert value["macd"] is not None
+    assert value["signal"] is not None
+    assert value["histogram"] == value["macd"] - value["signal"]
+
+
+def test_atr_uses_true_range_and_ignores_future_data():
+    klines = [
+        Kline(timestamp=1, open=10.0, high=12.0, low=9.0, close=11.0, volume=10.0),
+        Kline(timestamp=2, open=11.0, high=15.0, low=10.0, close=14.0, volume=10.0),
+        Kline(timestamp=3, open=14.0, high=16.0, low=13.0, close=15.0, volume=10.0),
+        Kline(timestamp=4, open=15.0, high=100.0, low=1.0, close=50.0, volume=10.0),
+    ]
+
+    value = AverageTrueRange(window=2).compute(klines, 2)
+
+    assert value == 4.0

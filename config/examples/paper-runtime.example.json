@@ -1,0 +1,95 @@
+{
+  "name": "paper-btc-usdt-ma",
+  "source": "paper",
+  "markets": [
+    {
+      "symbol": "BTCUSDT",
+      "timeframe": "1m",
+      "asset_class": "crypto",
+      "enabled": true,
+      "provider": "mock",
+      "metadata": {
+        "venue": "simulated",
+        "notes": "Paper runtime sample with deterministic local data."
+      }
+    }
+  ],
+  "strategies": [
+    {
+      "symbol": "BTCUSDT",
+      "strategy": "ma_crossover",
+      "route": "default",
+      "version": "1.0",
+      "parameters": {
+        "fast_window": 3,
+        "slow_window": 5,
+        "strategy_id": "paper_btc_ma"
+      },
+      "routes": [
+        {
+          "route": "trend",
+          "strategy": "ma_crossover",
+          "version": "1.0",
+          "parameters": {
+            "fast_window": 3,
+            "slow_window": 5,
+            "strategy_id": "paper_btc_ma_trend"
+          }
+        },
+        {
+          "route": "default",
+          "strategy": "ma_crossover",
+          "version": "1.0",
+          "parameters": {
+            "fast_window": 5,
+            "slow_window": 13,
+            "strategy_id": "paper_btc_ma_fallback"
+          }
+        }
+      ]
+    }
+  ],
+  "risk": {
+    "risk_plugin": "default",
+    "kill_switch_enabled": false,
+    "daily_loss_limit_pct": 0.03,
+    "consecutive_loss_limit": 3,
+    "api_failure_rate_limit": 0.2,
+    "max_position_size": 0.2,
+    "max_drawdown": 0.1,
+    "per_symbol_limits": {
+      "BTCUSDT": 0.2
+    }
+  },
+  "broker": {
+    "mode": "paper",
+    "broker_plugin": "simulated",
+    "account_id": null,
+    "order_log_path": "logs/paper/orders.jsonl",
+    "settings": {
+      "slippage_bps": 2,
+      "allow_live_orders": false
+    }
+  },
+  "logging": {
+    "decision_log_path": "logs/paper/decisions.jsonl",
+    "order_log_path": "logs/paper/orders.jsonl",
+    "fill_log_path": "logs/paper/fills.jsonl",
+    "pipeline_report_dir": "logs/paper/pipeline-runs"
+  },
+  "scan": {
+    "enabled": true,
+    "interval_seconds": 600,
+    "candidate_symbols": [
+      "BTCUSDT"
+    ],
+    "holding_symbols": [],
+    "default_timeframe": "1m"
+  },
+  "registry_plugins": {},
+  "metadata": {
+    "initial_balance": 10000.0,
+    "environment": "paper",
+    "contains_real_credentials": false
+  }
+}

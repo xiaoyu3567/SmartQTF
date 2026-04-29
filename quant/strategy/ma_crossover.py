@@ -1,11 +1,11 @@
 from quant.strategy.base.strategy import Strategy
+from quant.schemas import StrategySignal, TradeSide
 
 
 class MACrossoverStrategy(Strategy):
-    def __init__(self):
-        self.signal_buffer = []
-        self.generated_signal_indices = set()
-        self.executed_signal_indices = set()
+    def __init__(self, strategy_id="ma_crossover", strategy_version="1.0"):
+        self.strategy_id = strategy_id
+        self.strategy_version = strategy_version
 
     def generate_signal(self, features, index):
         fast_ma = features["fast_ma"]
@@ -23,42 +23,29 @@ class MACrossoverStrategy(Strategy):
             return None
 
         if previous_fast <= previous_slow and current_fast > current_slow:
-            return {"signal": "buy", "signal_index": index}
+            return self._build_signal(TradeSide.BUY, index)
 
         if previous_fast >= previous_slow and current_fast < current_slow:
-            return {"signal": "sell", "signal_index": index}
+            return self._build_signal(TradeSide.SELL, index)
 
         return None
 
     def on_bar(self, features, index):
-        executions = self.execute_due_signals(index)
-        signal = self.generate_signal(features, index)
+        if index <= 0:
+            return []
 
-        if signal is not None and signal["signal_index"] not in self.generated_signal_indices:
-            signal["execute_index"] = index + 1
-            self.signal_buffer.append(signal)
-            self.generated_signal_indices.add(signal["signal_index"])
+        signal = self.generate_signal(features, index - 1)
+        if signal is None:
+            return []
 
-        return executions
+        return [signal.with_execute_index(index)]
 
-    def execute_due_signals(self, index):
-        executions = []
-        next_buffer = []
-
-        for signal in self.signal_buffer:
-            signal_index = signal["signal_index"]
-
-            if signal["execute_index"] == index and signal_index not in self.executed_signal_indices:
-                executions.append(
-                    {
-                        "signal": signal["signal"],
-                        "signal_index": signal_index,
-                        "execute_index": index,
-                    }
-                )
-                self.executed_signal_indices.add(signal_index)
-            elif signal["execute_index"] > index:
-                next_buffer.append(signal)
-
-        self.signal_buffer = next_buffer
-        return executions
+    def _build_signal(self, side, index):
+        return StrategySignal(
+            signal_id=f"{self.strategy_id}:{index}:{side.value}",
+            strategy_id=self.strategy_id,
+            strategy_version=self.strategy_version,
+            side=side,
+            signal_index=index,
+            reason_codes=["ma_cross"],
+        )

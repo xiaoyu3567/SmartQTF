@@ -21,3 +21,7 @@ ENV/
 *.egg-info/
 dist/
 build/
+
+docs/
+logs/
+chatgpt-*.html
