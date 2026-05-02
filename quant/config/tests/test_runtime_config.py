@@ -10,8 +10,10 @@ from pydantic import ValidationError
 
 from quant.config import (
     BrokerConfig,
+    EnvironmentConfig,
     MarketConfig,
     RiskConfig,
+    RuntimeEnvironmentTier,
     RuntimeConfig,
     ScanConfig,
     StrategyBinding,
@@ -94,6 +96,134 @@ def test_scan_config_rejects_invalid_universe_limit():
         pass
     else:
         raise AssertionError("scan universe_max_symbols must be positive")
+
+
+def test_environment_config_defines_deployment_tier_safety_boundaries():
+    sandbox = EnvironmentConfig(
+        tier=RuntimeEnvironmentTier.EXCHANGE_SANDBOX,
+        external_exchange_access=True,
+        private_api_read=True,
+        live_order_submission=False,
+        dry_run=True,
+        requires_proxy=True,
+        requires_credentials=True,
+        requires_manual_preflight=True,
+        requires_human_approval=True,
+        tests_default_skipped=True,
+        credential_mode="env",
+    )
+    live_dry_run = EnvironmentConfig(
+        tier=RuntimeEnvironmentTier.LIVE_DRY_RUN,
+        external_exchange_access=True,
+        private_api_read=True,
+        live_order_submission=False,
+        dry_run=True,
+        requires_proxy=True,
+        requires_credentials=True,
+        requires_manual_preflight=True,
+        requires_human_approval=True,
+        tests_default_skipped=True,
+        credential_mode="env",
+    )
+
+    assert sandbox.tier == RuntimeEnvironmentTier.EXCHANGE_SANDBOX
+    assert sandbox.live_order_submission is False
+    assert sandbox.tests_default_skipped is True
+    assert live_dry_run.dry_run is True
+    assert live_dry_run.requires_manual_preflight is True
+
+
+def test_environment_config_rejects_exchange_tier_without_explicit_safety_gates():
+    try:
+        EnvironmentConfig(
+            tier=RuntimeEnvironmentTier.LIVE_DRY_RUN,
+            external_exchange_access=True,
+            private_api_read=True,
+            live_order_submission=False,
+            dry_run=True,
+            requires_proxy=False,
+            requires_credentials=True,
+            requires_manual_preflight=True,
+            requires_human_approval=True,
+            tests_default_skipped=True,
+            credential_mode="env",
+        )
+    except ValidationError:
+        pass
+    else:
+        raise AssertionError("live dry-run tier must require the project proxy")
+
+
+def test_live_dry_run_environment_rejects_live_order_enabled_config():
+    try:
+        RuntimeConfig(
+            name="unsafe-live-dry-run",
+            source=PayloadSource.LIVE,
+            markets=[MarketConfig(symbol="BTC-USDT", timeframe="1m", provider="okx_public")],
+            strategies=[StrategyBinding(symbol="BTC-USDT", strategy="ma_crossover")],
+            broker=BrokerConfig(
+                mode=PayloadSource.LIVE,
+                broker_plugin="okx_broker",
+                account_id="live-account",
+                settings={"allow_live_orders": True, "credential_mode": "env"},
+            ),
+            environment=EnvironmentConfig(
+                tier=RuntimeEnvironmentTier.LIVE_DRY_RUN,
+                external_exchange_access=True,
+                private_api_read=True,
+                live_order_submission=False,
+                dry_run=True,
+                requires_proxy=True,
+                requires_credentials=True,
+                requires_manual_preflight=True,
+                requires_human_approval=True,
+                tests_default_skipped=True,
+                credential_mode="env",
+            ),
+        )
+    except ValidationError:
+        pass
+    else:
+        raise AssertionError("live dry-run environment must keep allow_live_orders=false")
+
+
+def test_live_trading_environment_requires_non_dry_run_and_manual_gates():
+    config = RuntimeConfig(
+        name="live-trading-schema-only",
+        source=PayloadSource.LIVE,
+        markets=[MarketConfig(symbol="BTC-USDT", timeframe="1m", provider="okx_public")],
+        strategies=[StrategyBinding(symbol="BTC-USDT", strategy="ma_crossover")],
+        broker=BrokerConfig(
+            mode=PayloadSource.LIVE,
+            broker_plugin="okx_broker",
+            account_id="live-account",
+            settings={
+                "allow_live_orders": True,
+                "dry_run": False,
+                "require_manual_preflight": True,
+                "credential_mode": "env",
+            },
+        ),
+        environment=EnvironmentConfig(
+            tier=RuntimeEnvironmentTier.LIVE_TRADING,
+            external_exchange_access=True,
+            private_api_read=True,
+            live_order_submission=True,
+            dry_run=False,
+            requires_proxy=True,
+            requires_credentials=True,
+            requires_manual_preflight=True,
+            requires_human_approval=True,
+            tests_default_skipped=True,
+            credential_mode="env",
+        ),
+        metadata={"contains_real_credentials": False},
+    )
+
+    assert config.environment.tier == RuntimeEnvironmentTier.LIVE_TRADING
+    assert config.environment.live_order_submission is True
+    assert config.broker.settings["allow_live_orders"] is True
+    assert config.broker.settings["dry_run"] is False
 
 
 def test_strategy_binding_supports_symbol_specific_route_configs():
@@ -253,8 +383,10 @@ def _flatten_strings(value):
 def test_production_example_configs_load_without_real_credentials():
     example_dir = PROJECT_ROOT / "config" / "examples"
     paper_config = load_runtime_config(example_dir / "paper-runtime.example.json")
+    sandbox_config = load_runtime_config(example_dir / "sandbox-runtime.example.json")
     live_config = load_runtime_config(example_dir / "live-runtime.example.json")
     live_payload = _example_payload(example_dir / "live-runtime.example.json")
+    sandbox_payload = _example_payload(example_dir / "sandbox-runtime.example.json")
 
     assert paper_config.source == PayloadSource.PAPER
     assert paper_config.broker.mode == PayloadSource.PAPER
@@ -262,6 +394,12 @@ def test_production_example_configs_load_without_real_credentials():
     assert paper_config.logging.pipeline_report_dir == "logs/paper/pipeline-runs"
     assert paper_config.scan.interval_seconds == 600
     assert paper_config.scan.candidate_symbols == ["BTCUSDT"]
+    assert paper_config.environment.tier == RuntimeEnvironmentTier.PAPER
+    assert paper_config.environment.live_order_submission is False
+    assert sandbox_config.source == PayloadSource.LIVE
+    assert sandbox_config.environment.tier == RuntimeEnvironmentTier.EXCHANGE_SANDBOX
+    assert sandbox_config.broker.settings["allow_live_orders"] is False
+    assert sandbox_config.environment.tests_default_skipped is True
     assert live_config.source == PayloadSource.LIVE
     assert live_config.broker.mode == PayloadSource.LIVE
     assert live_config.markets[0].provider == "okx_public"
@@ -269,10 +407,15 @@ def test_production_example_configs_load_without_real_credentials():
     assert live_config.scan.holding_symbols == ["BTC-USDT"]
     assert live_config.risk.kill_switch_enabled is True
     assert live_config.broker.settings["allow_live_orders"] is False
+    assert live_config.broker.settings["dry_run"] is True
+    assert live_config.environment.tier == RuntimeEnvironmentTier.LIVE_DRY_RUN
+    assert live_config.environment.requires_proxy is True
+    assert live_config.environment.requires_human_approval is True
+    assert live_config.environment.live_order_submission is False
     assert live_config.metadata["contains_real_credentials"] is False
     assert not any(
         token.startswith(("sk-", "AKIA", "-----BEGIN", "OKX-REAL-"))
-        for token in _flatten_strings(live_payload)
+        for token in list(_flatten_strings(live_payload)) + list(_flatten_strings(sandbox_payload))
     )
 
 
@@ -291,6 +434,11 @@ def test_production_example_configs_can_construct_runtime_handlers():
         example_dir / "live-runtime.example.json",
         registry=live_registry,
     )
+    sandbox_runtime = TradingRuntimeOrchestrator.from_config_file(
+        example_dir / "sandbox-runtime.example.json",
+        registry=live_registry,
+    )
 
     assert PayloadSource.PAPER in paper_runtime.handlers
     assert PayloadSource.LIVE in live_runtime.handlers
+    assert PayloadSource.LIVE in sandbox_runtime.handlers

@@ -62,6 +62,15 @@ def make_decision_record(decision):
     )
 
 
+def make_decision_record_with_features(decision, values):
+    record = make_decision_record(decision)
+    record.metadata["feature_snapshot"] = {
+        "snapshot_id": f"features-{decision.decision_id}",
+        "values": values,
+    }
+    return record
+
+
 def make_fill(fill_id, decision_id, symbol, net_pnl, fee):
     return FillLogRecord(
         event_id=f"event-{fill_id}",
@@ -129,6 +138,28 @@ def test_trade_attribution_groups_pnl_by_strategy_regime_symbol_and_rule():
     assert bucket(report, "rule", "ma_cross").net_pnl == 12.5
     assert bucket(report, "rule", "risk_passed").net_pnl == 12.5
     assert bucket(report, "rule", "zscore_revert").net_pnl == -3.0
+    assert bucket(report, "decision_reason", "zscore_revert").losing_trades == 1
+
+
+def test_trade_attribution_groups_by_feature_bucket_from_decision_snapshot():
+    decision = make_decision(
+        "decision-001",
+        strategy_id="orderflow_breakout",
+        regime="trend",
+        reason_codes=["ofi_positive"],
+    )
+    records = [
+        make_decision_record_with_features(
+            decision,
+            {"orderflow_imbalance": 0.8, "funding_rate": -0.0002},
+        ),
+        make_fill("fill-001", "decision-001", "BTCUSDT", net_pnl=6.0, fee=0.1),
+    ]
+
+    report = TradeAttributionAnalyzer().build_report(records, report_id="attr-003")
+
+    assert bucket(report, "feature", "orderflow_imbalance:positive").net_pnl == 6.0
+    assert bucket(report, "feature", "funding_rate:negative").winning_trades == 1
 
 
 def test_trade_attribution_falls_back_to_fill_metadata():

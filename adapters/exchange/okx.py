@@ -247,6 +247,25 @@ class OKXAdapter:
         trades = [self._parse_trade(item) for item in response.get("data", [])]
         return sorted(trades, key=lambda trade: trade.timestamp)
 
+    def get_history_trades(
+        self,
+        symbol: str,
+        *,
+        limit: int = 100,
+        after_ts: Optional[int] = None,
+    ) -> List[Trade]:
+        params: Dict[str, Any] = {
+            "instId": self._normalize_symbol(symbol),
+            "limit": min(max(int(limit), 1), 100),
+        }
+        if after_ts is not None:
+            params["type"] = "2"
+            params["after"] = self._to_milliseconds(after_ts)
+
+        response = self._request("GET", "/api/v5/market/history-trades", params=params, auth=False)
+        trades = [self._parse_trade(item) for item in response.get("data", [])]
+        return sorted(trades, key=lambda trade: trade.timestamp)
+
     def get_orderbook(self, symbol: str, *, depth: int = 20) -> OrderBookSnapshot:
         if depth <= 0:
             raise OKXAdapterError("orderbook depth must be > 0")
@@ -280,15 +299,58 @@ class OKXAdapter:
             depth=depth,
         )
 
-    def get_netflow(self, symbol: str, *, timeframe: str = "1m", limit: int = 100) -> NetflowSnapshot:
+    def get_netflow(
+        self,
+        symbol: str,
+        *,
+        timeframe: str = "1m",
+        limit: int = 100,
+        max_history_pages: int = 20,
+    ) -> NetflowSnapshot:
         inst_id = self._normalize_symbol(symbol)
-        trades = self.get_trades(inst_id, limit=limit)
+        window_seconds = self._timeframe_seconds(timeframe)
+        recent_limit = min(max(int(limit), 1), 500)
+        history_page_limit = min(max(int(limit), 1), 100)
+        trades = self.get_trades(inst_id, limit=recent_limit)
         if not trades:
             raise OKXAdapterError("OKX returned empty trade data for netflow")
 
+        timestamp = trades[-1].timestamp
+        window_start = timestamp - window_seconds + 1
+        window_end = timestamp
+        coverage_gap_reason: Optional[str] = None
+
+        collected = self._deduplicate_trades(trades)
+        history_pages = 0
+        while collected and collected[0].timestamp > window_start and history_pages < max_history_pages:
+            history_page = self.get_history_trades(
+                inst_id,
+                limit=history_page_limit,
+                after_ts=collected[0].timestamp,
+            )
+            history_pages += 1
+            if not history_page:
+                coverage_gap_reason = "history_exhausted_before_window_start"
+                break
+
+            previous_earliest = collected[0].timestamp
+            collected = self._deduplicate_trades(collected + history_page)
+            if collected[0].timestamp >= previous_earliest:
+                coverage_gap_reason = "history_pagination_stalled"
+                break
+
+        if collected[0].timestamp > window_start and coverage_gap_reason is None:
+            coverage_gap_reason = "history_page_limit_reached"
+
+        window_trades = [
+            trade for trade in collected if window_start <= trade.timestamp <= window_end
+        ]
+        if not window_trades:
+            raise OKXAdapterError("OKX returned no trade data inside netflow timeframe window")
+
         inflow = 0.0
         outflow = 0.0
-        for trade in trades:
+        for trade in window_trades:
             notional = trade.price * trade.size
             if trade.side.lower() == "buy":
                 inflow += notional
@@ -297,7 +359,16 @@ class OKXAdapter:
             else:
                 raise OKXAdapterError("trade side must be buy or sell")
 
-        timestamp = trades[-1].timestamp
+        earliest_collected = collected[0].timestamp
+        latest_collected = collected[-1].timestamp
+        coverage_complete = earliest_collected <= window_start and latest_collected >= window_end
+        coverage_start = max(earliest_collected, window_start)
+        coverage_end = min(latest_collected, window_end)
+        if coverage_complete:
+            coverage_gap_reason = None
+        elif coverage_gap_reason is None:
+            coverage_gap_reason = "recent_trades_limit_did_not_cover_window"
+
         return NetflowSnapshot(
             snapshot_id=f"okx-netflow-{inst_id}-{timeframe}-{timestamp}",
             timestamp=timestamp,
@@ -308,6 +379,13 @@ class OKXAdapter:
             inflow=inflow,
             outflow=outflow,
             netflow=inflow - outflow,
+            window_start_timestamp=window_start,
+            window_end_timestamp=window_end,
+            trade_records_in_window=len(window_trades),
+            coverage_start=coverage_start,
+            coverage_end=coverage_end,
+            coverage_complete=coverage_complete,
+            coverage_gap_reason=coverage_gap_reason,
         )
 
     def get_open_interest(
@@ -728,6 +806,32 @@ class OKXAdapter:
         except KeyError as exc:
             raise OKXAdapterError(f"unsupported OKX timeframe: {timeframe}") from exc
 
+    def _timeframe_seconds(self, timeframe: str) -> int:
+        seconds = {
+            "1m": 60,
+            "3m": 180,
+            "5m": 300,
+            "15m": 900,
+            "30m": 1800,
+            "1h": 3600,
+            "4h": 14400,
+            "1d": 86400,
+        }
+        try:
+            return seconds[timeframe]
+        except KeyError as exc:
+            raise OKXAdapterError(f"unsupported OKX timeframe: {timeframe}") from exc
+
+    def _deduplicate_trades(self, trades: List[Trade]) -> List[Trade]:
+        unique: Dict[Tuple[Any, ...], Trade] = {}
+        for trade in trades:
+            if trade.trade_id:
+                key = ("id", trade.trade_id)
+            else:
+                key = ("raw", trade.timestamp, trade.price, trade.size, trade.side.lower())
+            unique[key] = trade
+        return sorted(unique.values(), key=lambda trade: trade.timestamp)
+
     def _normalize_side(self, side: str) -> str:
         side = str(side).strip().lower()
         aliases = {"buy": "buy", "sell": "sell", "long": "buy", "short": "sell"}
@@ -764,6 +868,7 @@ class OKXAdapter:
             low=self._float_text(item[3]),
             close=self._float_text(item[4]),
             volume=self._float_text(item[5]),
+            is_complete=(str(item[8]).strip() == "1") if len(item) > 8 else None,
         )
 
     def _parse_trade(self, payload: Dict[str, Any]) -> Trade:
@@ -777,6 +882,7 @@ class OKXAdapter:
             price=self._float_value(payload, "px"),
             size=self._float_value(payload, "sz"),
             side=side,
+            trade_id=str(payload.get("tradeId") or "").strip() or None,
         )
 
     def _parse_orderbook_level(self, item: List[Any]) -> OrderBookLevel:

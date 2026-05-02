@@ -10,6 +10,7 @@ from quant.schemas.enums import OrderKind, OrderStatus, TimeInForce, TradeSide
 from quant.schemas.execution import (
     BrokerOrderRequest,
     BrokerOrderResult,
+    ExchangeReadinessRequest,
     BrokerReplaceOrderRequest,
     InstrumentOrderRules,
     LiveOrderGateDecision,
@@ -330,3 +331,87 @@ def test_instrument_order_rules_reject_invalid_rule_bounds():
         assert "max_quantity must be greater than or equal to min_quantity" in str(exc)
     else:
         raise AssertionError("expected invalid rule bounds to raise ValueError")
+
+
+def test_broker_exchange_readiness_approves_safe_fixture_state_without_order_submit():
+    broker = InMemoryBroker()
+    broker.instrument_rules = {
+        "BTCUSDT": InstrumentOrderRules(
+            symbol="BTCUSDT",
+            quantity_step=0.001,
+            min_quantity=0.001,
+            price_tick=0.1,
+            min_notional=10.0,
+        )
+    }
+
+    report = broker.evaluate_exchange_readiness(
+        ExchangeReadinessRequest(
+            request_id="ready-1",
+            broker_name=broker.name,
+            symbol="BTCUSDT",
+            requested_at=1710000000,
+            desired_leverage=2.0,
+            max_leverage=5.0,
+            margin_mode="cross",
+            position_mode="one_way",
+            max_server_time_drift_ms=1000,
+            max_spread_bps=5.0,
+            max_slippage_bps=10.0,
+            min_rate_limit_remaining=3,
+            market_snapshot={"best_bid": 100.0, "best_ask": 100.02, "estimated_slippage_bps": 2.0},
+            exchange_state={
+                "trading_enabled": True,
+                "server_time_ms": 1710000000100,
+                "local_time_ms": 1710000000000,
+                "leverage": 2.0,
+                "margin_mode": "cross",
+                "position_mode": "one_way",
+                "rate_limit_remaining": 10,
+            },
+        )
+    )
+
+    assert report.approved is True
+    assert report.reason_codes == ["exchange_readiness_approved"]
+    assert report.instrument_rules.symbol == "BTCUSDT"
+    assert report.market_snapshot["spread_bps"] > 0.0
+    assert report.metadata["live_orders_sent"] is False
+    assert broker.orders == {}
+
+
+def test_broker_exchange_readiness_rejects_unsafe_fixture_state():
+    broker = InMemoryBroker()
+
+    report = broker.evaluate_exchange_readiness(
+        ExchangeReadinessRequest(
+            request_id="not-ready-1",
+            broker_name=broker.name,
+            symbol="BTCUSDT",
+            requested_at=1710000000,
+            desired_leverage=10.0,
+            max_leverage=3.0,
+            margin_mode="cross",
+            max_server_time_drift_ms=50,
+            max_spread_bps=1.0,
+            min_rate_limit_remaining=3,
+            market_snapshot={"best_bid": 100.0, "best_ask": 101.0},
+            exchange_state={
+                "trading_status": "suspended",
+                "server_time_ms": 1710000005000,
+                "local_time_ms": 1710000000000,
+                "margin_mode": "isolated",
+                "rate_limit_remaining": 0,
+            },
+        )
+    )
+
+    assert report.approved is False
+    assert "instrument_rules_missing" in report.reason_codes
+    assert "leverage_above_exchange_max" in report.reason_codes
+    assert "margin_mode_mismatch" in report.reason_codes
+    assert "symbol_trading_disabled" in report.reason_codes
+    assert "server_time_drift_exceeds_limit" in report.reason_codes
+    assert "spread_above_limit" in report.reason_codes
+    assert "rate_limit_capacity_low" in report.reason_codes
+    assert report.metadata["broker_place_order_called"] is False

@@ -8,7 +8,9 @@ from quant.schemas.enums import (
     ExchangeErrorCategory,
     OrderKind,
     OrderStatus,
+    PayloadSource,
     TimeInForce,
+    TimeoutFailureKind,
     TimeoutRecoveryAction,
     TradeSide,
 )
@@ -349,7 +351,12 @@ class LiveOrderGateDecisionBase(SmartQTFModel):
     reason_codes: List[str]
     message: str
     checked_at: int
+    live_mode_enabled: bool = False
     allow_live_orders: bool = False
+    risk_approved: bool = False
+    portfolio_allocation_approved: bool = False
+    dry_run: bool = True
+    credential_mode: str = "missing"
     preflight_artifact_path: Optional[str] = None
     preflight_generated_at: Optional[int] = None
     preflight_artifact_age_seconds: Optional[int] = None
@@ -374,6 +381,53 @@ class LiveOrderGateDecisionBase(SmartQTFModel):
         if value is not None and value < 0:
             raise ValueError(f"{field_name} must be greater than or equal to 0")
         return value
+
+
+class ExchangeReadinessRequest(SmartQTFModel):
+    request_id: str
+    broker_name: str
+    symbol: str
+    requested_at: int
+    desired_leverage: Optional[float] = Field(default=None, gt=0.0)
+    max_leverage: Optional[float] = Field(default=None, gt=0.0)
+    margin_mode: Optional[str] = None
+    position_mode: Optional[str] = None
+    td_mode: Optional[str] = None
+    max_server_time_drift_ms: Optional[int] = Field(default=1000, ge=0)
+    max_spread_bps: Optional[float] = Field(default=None, ge=0.0)
+    max_slippage_bps: Optional[float] = Field(default=None, ge=0.0)
+    min_rate_limit_remaining: Optional[int] = Field(default=None, ge=0)
+    require_trading_enabled: bool = True
+    require_instrument_rules: bool = True
+    require_market_snapshot: bool = True
+    reference_price: Optional[float] = Field(default=None, gt=0.0)
+    instrument_rules: Optional[InstrumentOrderRulesBase] = None
+    market_snapshot: Dict[str, Any] = Field(default_factory=dict)
+    exchange_state: Dict[str, Any] = Field(default_factory=dict)
+    metadata: Dict[str, Any] = Field(default_factory=dict)
+
+
+class ExchangeReadinessCheck(SmartQTFModel):
+    name: str
+    passed: bool
+    code: str
+    message: str
+    severity: Literal["info", "warning", "error"] = "error"
+    metadata: Dict[str, Any] = Field(default_factory=dict)
+
+
+class ExchangeReadinessReport(SmartQTFModel):
+    report_id: str
+    broker_name: str
+    symbol: str
+    checked_at: int
+    approved: bool
+    reason_codes: List[str]
+    checks: List[ExchangeReadinessCheck] = Field(default_factory=list)
+    instrument_rules: Optional[InstrumentOrderRulesBase] = None
+    market_snapshot: Dict[str, Any] = Field(default_factory=dict)
+    exchange_state: Dict[str, Any] = Field(default_factory=dict)
+    metadata: Dict[str, Any] = Field(default_factory=dict)
 
 
 def _is_multiple(value: float, step: float) -> bool:
@@ -746,6 +800,45 @@ class BrokerProtectiveOrderResultBase(ProtectiveOrderValidationMixin, SmartQTFMo
     metadata: Dict[str, Any] = Field(default_factory=dict)
 
 
+class BracketExecutionStatus:
+    OPEN_PROTECTED = "OPEN_PROTECTED"
+    PARTIALLY_EXECUTED_PROTECTED = "PARTIALLY_EXECUTED_PROTECTED"
+    CANCELLED_NOT_FILLED = "CANCELLED_NOT_FILLED"
+    EMERGENCY_EXIT = "EMERGENCY_EXIT"
+    NO_POSITION = "NO_POSITION"
+    ENTRY_SUBMITTED_UNPROTECTED = "ENTRY_SUBMITTED_UNPROTECTED"
+    ENTRY_REJECTED = "ENTRY_REJECTED"
+    PROTECTION_FAILED = "PROTECTION_FAILED"
+    REJECTED = "REJECTED"
+
+
+class BracketProtectiveLeg(SmartQTFModel):
+    client_order_id: str
+    price: float
+
+
+class BracketExecutionPolicy(SmartQTFModel):
+    native_order_type: str = "oco"
+    protective_client_order_id: Optional[str] = None
+    max_fill_wait_ms: int = 0
+    cancel_if_not_filled: bool = False
+    metadata: Dict[str, Any] = Field(default_factory=dict)
+
+
+class BracketExecutionPlan(SmartQTFModel):
+    execution_plan_id: str
+    idempotency_key: str
+    risk_decision_id: str
+    allocation_id: str
+    entry_order: BrokerOrderRequest
+    stop_loss_order: BracketProtectiveLeg
+    take_profit_order: Optional[BracketProtectiveLeg] = None
+    policy: BracketExecutionPolicy = Field(default_factory=BracketExecutionPolicy)
+    risk_approved: bool = True
+    trace: Optional[TraceContext] = None
+    metadata: Dict[str, Any] = Field(default_factory=dict)
+
+
 if hasattr(BaseModel, "model_validate"):
 
     class BrokerProtectiveOrderRequest(BrokerProtectiveOrderRequestBase):
@@ -929,6 +1022,8 @@ class ReconciliationItem(SmartQTFModel):
     requested_qty: Optional[float] = None
     local_filled_qty: Optional[float] = None
     broker_filled_qty: Optional[float] = None
+    local_avg_fill_price: Optional[float] = None
+    broker_avg_fill_price: Optional[float] = None
     trace: Optional[TraceContext] = None
 
 
@@ -947,6 +1042,128 @@ class TimeoutRecoveryDecision(SmartQTFModel):
     action: TimeoutRecoveryAction
     reason: str
     status: OrderStatus = OrderStatus.UNKNOWN
+    failure_kind: Optional[TimeoutFailureKind] = None
+    recovery_attempt: int = 1
+    max_recovery_attempts: Optional[int] = None
+    recovery_query_attempted: bool = True
+    broker_place_called: bool = False
+    duplicate_order_guard_active: bool = True
+    retry_after_seconds: Optional[int] = None
     recovered_order: Optional[BrokerOrderResult] = None
     error: Optional[str] = None
     trace: Optional[TraceContext] = None
+
+
+class OrderLifecycleContract(SmartQTFModel):
+    contract_version: str = "order_lifecycle_v1"
+    source: PayloadSource
+    execution_mode: str
+    client_order_id: str
+    symbol: str
+    side: TradeSide
+    order_status: OrderStatus
+    lifecycle_state: str
+    lifecycle_path: List[str] = Field(default_factory=list)
+    requested_qty: float
+    filled_qty: float = 0.0
+    remaining_qty: float = 0.0
+    order_intent: Optional[OrderIntent] = None
+    transition_audit: List[Dict[str, Any]] = Field(default_factory=list)
+    safety_flags: Dict[str, bool] = Field(default_factory=dict)
+    metadata: Dict[str, Any] = Field(default_factory=dict)
+    trace: Optional[TraceContext] = None
+
+
+class OrderStoreOrderRecord(SmartQTFModel):
+    client_order_id: str
+    broker_order_id: Optional[str] = None
+    symbol: str
+    side: TradeSide
+    status: OrderStatus
+    requested_qty: float
+    filled_qty: float = 0.0
+    avg_fill_price: Optional[float] = None
+    order_intent: Optional[OrderIntent] = None
+    broker_result: Optional[BrokerOrderResult] = None
+    raw_exchange_response: Dict[str, Any] = Field(default_factory=dict)
+    created_at: Optional[int] = None
+    updated_at: Optional[int] = None
+    trace: Optional[TraceContext] = None
+    metadata: Dict[str, Any] = Field(default_factory=dict)
+
+
+class OrderStoreEventRecord(SmartQTFModel):
+    sequence: int
+    event_id: str
+    client_order_id: str
+    event_type: str
+    from_state: Optional[str] = None
+    to_state: Optional[str] = None
+    broker_order_id: Optional[str] = None
+    event_time: Optional[int] = None
+    reason: Optional[str] = None
+    payload: Dict[str, Any] = Field(default_factory=dict)
+    raw_exchange_response: Dict[str, Any] = Field(default_factory=dict)
+    trace: Optional[TraceContext] = None
+    metadata: Dict[str, Any] = Field(default_factory=dict)
+
+
+class OrderStoreFillRecord(SmartQTFModel):
+    fill_event_id: str
+    client_order_id: str
+    broker_order_id: Optional[str] = None
+    symbol: str
+    side: TradeSide
+    status: OrderStatus
+    fill_qty: float
+    fill_price: float
+    cumulative_filled_qty: float
+    remaining_qty: float
+    fill_index: int
+    event_time: Optional[int] = None
+    fill_event: ExecutionFillEvent
+    raw_exchange_response: Dict[str, Any] = Field(default_factory=dict)
+    trace: Optional[TraceContext] = None
+    metadata: Dict[str, Any] = Field(default_factory=dict)
+
+
+class OrderStoreIdempotencyKeyRecord(SmartQTFModel):
+    client_order_id: str
+    request_fingerprint: str
+    request_payload: Dict[str, Any]
+    status: OrderStatus = OrderStatus.UNKNOWN
+    submit_intent_count: int = 0
+    broker_order_id: Optional[str] = None
+    result: Optional[BrokerOrderResult] = None
+    last_error: Optional[str] = None
+    created_at: Optional[int] = None
+    updated_at: Optional[int] = None
+    metadata: Dict[str, Any] = Field(default_factory=dict)
+
+
+class OrderStoreReconciliationRunRecord(SmartQTFModel):
+    run_id: str
+    broker_name: str
+    checked_count: int
+    matched_count: int
+    drift_count: int
+    missing_local_count: int
+    missing_broker_count: int
+    started_at: Optional[int] = None
+    finished_at: Optional[int] = None
+    report: ReconciliationReport
+    raw_exchange_response: Dict[str, Any] = Field(default_factory=dict)
+    metadata: Dict[str, Any] = Field(default_factory=dict)
+
+
+class OrderStoreReconstruction(SmartQTFModel):
+    client_order_id: str
+    order: OrderStoreOrderRecord
+    events: List[OrderStoreEventRecord] = Field(default_factory=list)
+    fills: List[OrderStoreFillRecord] = Field(default_factory=list)
+    idempotency_key: Optional[OrderStoreIdempotencyKeyRecord] = None
+    reconciliation_runs: List[OrderStoreReconciliationRunRecord] = Field(default_factory=list)
+    replay_status: OrderStatus
+    total_filled_qty: float = 0.0
+    avg_fill_price: Optional[float] = None
+    lifecycle_path: List[str] = Field(default_factory=list)

@@ -13,6 +13,14 @@ else:
 FeatureValue = Union[float, int, bool, str, None]
 
 
+class FeatureAvailability(SmartQTFModel):
+    feature_name: str
+    available: bool
+    reason: Optional[str] = None
+    required_bars: Optional[int] = None
+    actual_bars: Optional[int] = None
+
+
 class MarketAuxiliarySnapshotBase(SmartQTFModel):
     snapshot_id: str
     timestamp: int
@@ -76,6 +84,13 @@ class NetflowSnapshotBase(MarketAuxiliarySnapshotBase):
     netflow: Optional[float] = None
     exchange_reserve: Optional[float] = None
     large_transfer_count: Optional[int] = None
+    window_start_timestamp: Optional[int] = None
+    window_end_timestamp: Optional[int] = None
+    trade_records_in_window: Optional[int] = None
+    coverage_start: Optional[int] = None
+    coverage_end: Optional[int] = None
+    coverage_complete: Optional[bool] = None
+    coverage_gap_reason: Optional[str] = None
 
     @property
     def computed_netflow(self) -> float:
@@ -87,6 +102,7 @@ class NetflowSnapshotBase(MarketAuxiliarySnapshotBase):
         outflow = values.get("outflow")
         exchange_reserve = values.get("exchange_reserve")
         large_transfer_count = values.get("large_transfer_count")
+        trade_records_in_window = values.get("trade_records_in_window")
         if inflow is not None and inflow < 0:
             raise ValueError("inflow must be >= 0")
         if outflow is not None and outflow < 0:
@@ -95,6 +111,21 @@ class NetflowSnapshotBase(MarketAuxiliarySnapshotBase):
             raise ValueError("exchange_reserve must be >= 0")
         if large_transfer_count is not None and large_transfer_count < 0:
             raise ValueError("large_transfer_count must be >= 0")
+        if trade_records_in_window is not None and trade_records_in_window < 0:
+            raise ValueError("trade_records_in_window must be >= 0")
+        return values
+
+    @classmethod
+    def coverage_window_must_be_valid(cls, values):
+        window_start = values.get("window_start_timestamp")
+        window_end = values.get("window_end_timestamp")
+        coverage_start = values.get("coverage_start")
+        coverage_end = values.get("coverage_end")
+
+        if window_start is not None and window_end is not None and window_start > window_end:
+            raise ValueError("window_start_timestamp must be <= window_end_timestamp")
+        if coverage_start is not None and coverage_end is not None and coverage_start > coverage_end:
+            raise ValueError("coverage_start must be <= coverage_end")
         return values
 
     @classmethod
@@ -325,9 +356,17 @@ class FeatureSnapshotBase(SmartQTFModel):
     feature_set_id: str
     feature_set_version: str
     values: Dict[str, FeatureValue] = Field(default_factory=dict)
+    feature_availability: Dict[str, FeatureAvailability] = Field(default_factory=dict)
+    feature_parameters: Dict[str, Dict[str, FeatureValue]] = Field(default_factory=dict)
     source_window_start: Optional[int] = None
     source_window_end: Optional[int] = None
     is_complete_bar: bool = True
+    requested_index: Optional[int] = None
+    effective_index: Optional[int] = None
+    input_bar_count: Optional[int] = None
+    include_incomplete_last_bar: bool = False
+    skipped_incomplete_last_bar: bool = False
+    skipped_incomplete_bar_timestamp: Optional[int] = None
     trace: Optional[TraceContext] = None
 
     @property
@@ -350,6 +389,14 @@ class FeatureSnapshotBase(SmartQTFModel):
         source_window_start: Optional[int] = None,
         source_window_end: Optional[int] = None,
         is_complete_bar: bool = True,
+        requested_index: Optional[int] = None,
+        effective_index: Optional[int] = None,
+        input_bar_count: Optional[int] = None,
+        include_incomplete_last_bar: bool = False,
+        skipped_incomplete_last_bar: bool = False,
+        skipped_incomplete_bar_timestamp: Optional[int] = None,
+        feature_availability: Optional[Dict[str, FeatureAvailability]] = None,
+        feature_parameters: Optional[Dict[str, Dict[str, FeatureValue]]] = None,
         trace: Optional[TraceContext] = None,
     ):
         values = {}
@@ -367,9 +414,17 @@ class FeatureSnapshotBase(SmartQTFModel):
             feature_set_id=feature_set_id,
             feature_set_version=feature_set_version,
             values=values,
+            feature_availability=feature_availability or {},
+            feature_parameters=feature_parameters or {},
             source_window_start=source_window_start,
             source_window_end=source_window_end,
             is_complete_bar=is_complete_bar,
+            requested_index=index if requested_index is None else requested_index,
+            effective_index=index if effective_index is None else effective_index,
+            input_bar_count=input_bar_count,
+            include_incomplete_last_bar=include_incomplete_last_bar,
+            skipped_incomplete_last_bar=skipped_incomplete_last_bar,
+            skipped_incomplete_bar_timestamp=skipped_incomplete_bar_timestamp,
             trace=trace,
         )
 
@@ -398,6 +453,84 @@ class FeatureSnapshotBase(SmartQTFModel):
             raise ValueError("as_of_timestamp must be <= timestamp")
         return values
 
+    @classmethod
+    def audit_indexes_must_be_valid(cls, values):
+        requested_index = values.get("requested_index")
+        effective_index = values.get("effective_index")
+        input_bar_count = values.get("input_bar_count")
+        skipped_incomplete_last_bar = values.get("skipped_incomplete_last_bar")
+        skipped_incomplete_bar_timestamp = values.get("skipped_incomplete_bar_timestamp")
+        include_incomplete_last_bar = values.get("include_incomplete_last_bar")
+
+        for field_name, value in {
+            "requested_index": requested_index,
+            "effective_index": effective_index,
+        }.items():
+            if value is not None and value < 0:
+                raise ValueError(f"{field_name} must be >= 0")
+        if input_bar_count is not None and input_bar_count <= 0:
+            raise ValueError("input_bar_count must be > 0")
+        if requested_index is not None and input_bar_count is not None and requested_index >= input_bar_count:
+            raise ValueError("requested_index must be < input_bar_count")
+        if effective_index is not None and input_bar_count is not None and effective_index >= input_bar_count:
+            raise ValueError("effective_index must be < input_bar_count")
+        if skipped_incomplete_last_bar:
+            if skipped_incomplete_bar_timestamp is None:
+                raise ValueError("skipped_incomplete_bar_timestamp is required when skipping incomplete bar")
+            if include_incomplete_last_bar:
+                raise ValueError("skipped incomplete bar cannot also be included")
+            if requested_index is not None and effective_index is not None and effective_index >= requested_index:
+                raise ValueError("effective_index must be before requested_index when skipping incomplete bar")
+        return values
+
+    @classmethod
+    def feature_metadata_must_be_named(cls, values):
+        feature_availability = values.get("feature_availability") or {}
+        feature_parameters = values.get("feature_parameters") or {}
+
+        for feature_name, availability in feature_availability.items():
+            if not feature_name or not feature_name.strip():
+                raise ValueError("feature availability names must not be empty")
+            availability_name = (
+                availability.feature_name
+                if isinstance(availability, FeatureAvailability)
+                else availability.get("feature_name")
+            )
+            if availability_name != feature_name:
+                raise ValueError("feature availability key must match feature_name")
+
+            available = (
+                availability.available
+                if isinstance(availability, FeatureAvailability)
+                else availability.get("available")
+            )
+            reason = availability.reason if isinstance(availability, FeatureAvailability) else availability.get("reason")
+            required_bars = (
+                availability.required_bars
+                if isinstance(availability, FeatureAvailability)
+                else availability.get("required_bars")
+            )
+            actual_bars = (
+                availability.actual_bars
+                if isinstance(availability, FeatureAvailability)
+                else availability.get("actual_bars")
+            )
+
+            if not available and not reason:
+                raise ValueError("unavailable features must include a reason")
+            if required_bars is not None and required_bars <= 0:
+                raise ValueError("required_bars must be > 0")
+            if actual_bars is not None and actual_bars < 0:
+                raise ValueError("actual_bars must be >= 0")
+
+        for feature_name, parameters in feature_parameters.items():
+            if not feature_name or not feature_name.strip():
+                raise ValueError("feature parameter names must not be empty")
+            for parameter_name in parameters:
+                if not parameter_name or not parameter_name.strip():
+                    raise ValueError("feature parameter keys must not be empty")
+        return values
+
 
 if hasattr(BaseModel, "model_validate"):
 
@@ -423,6 +556,7 @@ if hasattr(BaseModel, "model_validate"):
             values = self.__dict__.copy()
             self.as_of_timestamp_must_not_read_future(values)
             self.numeric_values_must_be_valid(values)
+            self.coverage_window_must_be_valid(values)
             self.explicit_netflow_must_match_flows(values)
             return self
 
@@ -476,6 +610,8 @@ if hasattr(BaseModel, "model_validate"):
             values = self.__dict__.copy()
             self.source_window_must_be_ordered(values)
             self.as_of_timestamp_must_not_read_future(values)
+            self.audit_indexes_must_be_valid(values)
+            self.feature_metadata_must_be_named(values)
             return self
 
 else:
@@ -499,6 +635,7 @@ else:
         def validate_snapshot(cls, values):
             cls.as_of_timestamp_must_not_read_future(values)
             cls.numeric_values_must_be_valid(values)
+            cls.coverage_window_must_be_valid(values)
             cls.explicit_netflow_must_match_flows(values)
             return values
 
@@ -545,4 +682,121 @@ else:
         def validate_time_bounds(cls, values):
             cls.source_window_must_be_ordered(values)
             cls.as_of_timestamp_must_not_read_future(values)
+            cls.audit_indexes_must_be_valid(values)
+            cls.feature_metadata_must_be_named(values)
             return values
+
+
+class FeatureQualityReportRef(SmartQTFModel):
+    timeframe: str
+    passed: bool
+    checked_count: int
+    issue_codes: List[str] = Field(default_factory=list)
+    fatal_issue_codes: List[str] = Field(default_factory=list)
+    first_timestamp: Optional[int] = None
+    last_timestamp: Optional[int] = None
+    has_incomplete_last_bar: bool = False
+
+    def __init__(self, **data):
+        super().__init__(**data)
+        timeframe = self.timeframe.strip()
+        if not timeframe:
+            raise ValueError("timeframe must not be empty")
+        if self.checked_count < 0:
+            raise ValueError("checked_count must be >= 0")
+        if self.first_timestamp is not None and self.first_timestamp < 0:
+            raise ValueError("first_timestamp must be >= 0")
+        if self.last_timestamp is not None and self.last_timestamp < 0:
+            raise ValueError("last_timestamp must be >= 0")
+        if (
+            self.first_timestamp is not None
+            and self.last_timestamp is not None
+            and self.first_timestamp > self.last_timestamp
+        ):
+            raise ValueError("first_timestamp must be <= last_timestamp")
+        if any(not issue_code or not issue_code.strip() for issue_code in self.issue_codes):
+            raise ValueError("issue_codes must not contain empty values")
+        if any(
+            not issue_code or not issue_code.strip()
+            for issue_code in self.fatal_issue_codes
+        ):
+            raise ValueError("fatal_issue_codes must not contain empty values")
+        object.__setattr__(self, "timeframe", timeframe)
+
+
+class MultiTimeframeFeatureSnapshot(SmartQTFModel):
+    snapshot_id: str
+    timestamp: int
+    symbol: str
+    execution_timeframe: str
+    timeframe_snapshots: Dict[str, FeatureSnapshot] = Field(default_factory=dict)
+    alignment_features: Dict[str, FeatureValue] = Field(default_factory=dict)
+    quality_report_refs: Dict[str, FeatureQualityReportRef] = Field(default_factory=dict)
+    trace: Optional[TraceContext] = None
+
+    def __init__(self, **data):
+        super().__init__(**data)
+        snapshot_id = self.snapshot_id.strip()
+        symbol = self.symbol.strip()
+        execution_timeframe = self.execution_timeframe.strip()
+
+        if not snapshot_id:
+            raise ValueError("snapshot_id must not be empty")
+        if self.timestamp < 0:
+            raise ValueError("timestamp must be >= 0")
+        if not symbol:
+            raise ValueError("symbol must not be empty")
+        if not execution_timeframe:
+            raise ValueError("execution_timeframe must not be empty")
+        if not self.timeframe_snapshots:
+            raise ValueError("timeframe_snapshots must not be empty")
+        if execution_timeframe not in self.timeframe_snapshots:
+            raise ValueError("execution_timeframe must exist in timeframe_snapshots")
+
+        normalized_snapshots: Dict[str, FeatureSnapshot] = {}
+        for timeframe, snapshot in self.timeframe_snapshots.items():
+            normalized_timeframe = timeframe.strip()
+            if not normalized_timeframe:
+                raise ValueError("timeframe snapshot keys must not be empty")
+            if snapshot.symbol != symbol:
+                raise ValueError("feature snapshot symbol must match multi-timeframe symbol")
+            if snapshot.timeframe != normalized_timeframe:
+                raise ValueError("timeframe snapshot key must match snapshot timeframe")
+            normalized_snapshots[normalized_timeframe] = snapshot
+
+        normalized_quality_refs: Dict[str, FeatureQualityReportRef] = {}
+        for timeframe, ref in self.quality_report_refs.items():
+            normalized_timeframe = timeframe.strip()
+            if not normalized_timeframe:
+                raise ValueError("quality_report_refs keys must not be empty")
+            if ref.timeframe != normalized_timeframe:
+                raise ValueError("quality_report_refs key must match ref timeframe")
+            if normalized_timeframe not in normalized_snapshots:
+                raise ValueError("quality_report_refs must reference computed timeframes")
+            normalized_quality_refs[normalized_timeframe] = ref
+
+        missing_quality_refs = set(normalized_snapshots) - set(normalized_quality_refs)
+        if missing_quality_refs:
+            raise ValueError("quality_report_refs must include every computed timeframe")
+
+        for feature_name in self.alignment_features:
+            if not feature_name or not feature_name.strip():
+                raise ValueError("alignment feature names must not be empty")
+
+        object.__setattr__(self, "snapshot_id", snapshot_id)
+        object.__setattr__(self, "symbol", symbol)
+        object.__setattr__(self, "execution_timeframe", execution_timeframe)
+        object.__setattr__(self, "timeframe_snapshots", normalized_snapshots)
+        object.__setattr__(self, "quality_report_refs", normalized_quality_refs)
+
+    @property
+    def execution_snapshot(self) -> FeatureSnapshot:
+        return self.timeframe_snapshots[self.execution_timeframe]
+
+    @property
+    def context_timeframes(self) -> List[str]:
+        return [
+            timeframe
+            for timeframe in self.timeframe_snapshots
+            if timeframe != self.execution_timeframe
+        ]

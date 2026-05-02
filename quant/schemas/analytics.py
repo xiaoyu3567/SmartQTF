@@ -63,6 +63,8 @@ class DailyReviewBucketBase(SmartQTFModel):
     winning_trades: int = 0
     losing_trades: int = 0
     rejection_count: int = 0
+    risk_rejection_count: int = 0
+    order_failure_count: int = 0
     anomaly_count: int = 0
 
     @classmethod
@@ -85,6 +87,8 @@ class DailyReviewReportBase(SmartQTFModel):
     winning_trades: int = 0
     losing_trades: int = 0
     rejection_count: int = 0
+    risk_rejection_count: int = 0
+    order_failure_count: int = 0
     anomaly_count: int = 0
     summary_text: str = ""
 
@@ -114,6 +118,8 @@ if hasattr(BaseModel, "model_validate"):
             "winning_trades",
             "losing_trades",
             "rejection_count",
+            "risk_rejection_count",
+            "order_failure_count",
             "anomaly_count",
         )
         @classmethod
@@ -128,6 +134,8 @@ if hasattr(BaseModel, "model_validate"):
             "winning_trades",
             "losing_trades",
             "rejection_count",
+            "risk_rejection_count",
+            "order_failure_count",
             "anomaly_count",
         )
         @classmethod
@@ -154,6 +162,8 @@ else:
             "winning_trades",
             "losing_trades",
             "rejection_count",
+            "risk_rejection_count",
+            "order_failure_count",
             "anomaly_count",
         )
         def validate_counts(cls, value):
@@ -167,6 +177,8 @@ else:
             "winning_trades",
             "losing_trades",
             "rejection_count",
+            "risk_rejection_count",
+            "order_failure_count",
             "anomaly_count",
         )
         def validate_counts(cls, value):

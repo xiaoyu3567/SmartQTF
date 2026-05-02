@@ -23,6 +23,11 @@ class TradeAttributionAnalyzer:
             for record in records
             if isinstance(record, DecisionLogRecord)
         }
+        decision_records = {
+            record.decision.decision_id: record
+            for record in records
+            if isinstance(record, DecisionLogRecord)
+        }
         fills = [record for record in records if isinstance(record, FillLogRecord)]
 
         if run_id is None:
@@ -46,7 +51,8 @@ class TradeAttributionAnalyzer:
             total_net_pnl += net_pnl
             trade_count += 1 if net_pnl != 0.0 else 0
 
-            for bucket_type, bucket_values in self._bucket_values(fill, decision).items():
+            decision_record = decision_records.get(fill.decision_id)
+            for bucket_type, bucket_values in self._bucket_values(fill, decision, decision_record).items():
                 for bucket_value in bucket_values:
                     key = (bucket_type, bucket_value)
                     bucket = buckets.setdefault(
@@ -86,7 +92,7 @@ class TradeAttributionAnalyzer:
     def _fees(self, fill):
         return float(fill.metadata.get("fee", fill.commission))
 
-    def _bucket_values(self, fill, decision):
+    def _bucket_values(self, fill, decision, decision_record=None):
         strategy_id = fill.metadata.get("strategy_id")
         regime = fill.metadata.get("regime")
         reason_codes = fill.metadata.get("reason_codes")
@@ -104,7 +110,50 @@ class TradeAttributionAnalyzer:
             "strategy": [strategy_id or "unknown"],
             "regime": [regime or "unknown"],
             "rule": list(reason_codes or ["unknown"]),
+            "decision_reason": list(reason_codes or ["unknown"]),
+            "feature": self._feature_bucket_values(fill, decision_record) or ["unknown"],
         }
+
+    def _feature_bucket_values(self, fill, decision_record=None):
+        snapshot = (
+            fill.metadata.get("feature_snapshot")
+            or fill.metadata.get("features")
+            or {}
+        )
+        if not snapshot and decision_record is not None:
+            snapshot = (
+                getattr(decision_record, "feature_snapshot", None)
+                or decision_record.metadata.get("feature_snapshot")
+                or decision_record.metadata.get("features")
+                or {}
+            )
+        if hasattr(snapshot, "to_payload"):
+            snapshot = snapshot.to_payload()
+        values = snapshot.get("values") if isinstance(snapshot, dict) else None
+        if values is None and isinstance(snapshot, dict):
+            values = snapshot
+        if not isinstance(values, dict):
+            return []
+
+        buckets = []
+        for feature_name, feature_value in sorted(values.items()):
+            bucket = self._feature_value_bucket(feature_value)
+            if bucket is not None:
+                buckets.append(f"{feature_name}:{bucket}")
+        return buckets
+
+    def _feature_value_bucket(self, value):
+        if isinstance(value, bool):
+            return "true" if value else "false"
+        if isinstance(value, (int, float)):
+            if value > 0.0:
+                return "positive"
+            if value < 0.0:
+                return "negative"
+            return "zero"
+        if isinstance(value, str) and value:
+            return value
+        return None
 
 
 class _MutableBucket:

@@ -5,6 +5,13 @@ from quant.features.indicators.orderflow import OrderFlowAlphaFeature
 from quant.schemas.feature import OrderBookLevel, OrderBookSnapshot
 
 
+def _raw_trade(timestamp: int, price: float, size: float, side: str) -> Trade:
+    payload = {"timestamp": timestamp, "price": price, "size": size, "side": side}
+    if hasattr(Trade, "model_construct"):
+        return Trade.model_construct(**payload)
+    return Trade.construct(**payload)
+
+
 def test_orderflow_alpha_computes_large_trade_and_taker_ratio():
     trades = [
         Trade(timestamp=1, price=100.0, size=1.0, side="buy"),
@@ -72,7 +79,7 @@ def test_orderflow_alpha_ignores_future_trades_at_index():
 
 
 def test_orderflow_alpha_rejects_unknown_trade_side():
-    trades = [Trade(timestamp=1, price=100.0, size=1.0, side="unknown")]
+    trades = [_raw_trade(timestamp=1, price=100.0, size=1.0, side="unknown")]
 
     with pytest.raises(ValueError, match="trade side"):
         OrderFlowAlphaFeature().compute(trades)

@@ -2,8 +2,6 @@ import json
 import sys
 from pathlib import Path
 
-import typer
-
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
@@ -12,8 +10,6 @@ if str(PROJECT_ROOT) not in sys.path:
 from quant.data.schemas.market import Kline
 from quant.orchestration import PaperTradingOrchestrator
 
-
-app = typer.Typer()
 
 SYMBOL = "BTCUSDT"
 TIMEFRAME = "1m"
@@ -199,7 +195,7 @@ def build_teacher_note(report):
 def build_gap_note(report):
     gaps = [
         "当前仍是教学数据，不是真实 Binance/OKX 行情。",
-        "Dashboard 和 CLI 已读取同一份 PipelineRunReport，但还没有运行配置层。",
+        "Dashboard 读取同一份 PipelineRunReport，但还没有运行配置层。",
         "执行层仍是模拟成交，真实 Broker Adapter、限流和交易所回报尚未接入。",
     ]
     if not report.success:
@@ -215,16 +211,12 @@ def build_reports():
     ]
 
 
-def run_pipeline(verbose=True):
+def run_pipeline(verbose=False):
     reports = build_reports()
     rows = [report_to_row(report, index) for index, report in enumerate(reports)]
     executed = [row for row in rows if row["execution_result_json"] is not None]
     rejected = [row for row in rows if row["risk_decision_json"] is not None and not row["risk_decision_json"].get("approved")]
-    skipped_execution = [
-        row
-        for row in rows
-        if row["stage_statuses"].get("execution") == "skipped"
-    ]
+    skipped_execution = [row for row in rows if row["stage_statuses"].get("execution") == "skipped"]
     summary = {
         "bars": len(rows),
         "reports": len(reports),
@@ -237,32 +229,19 @@ def run_pipeline(verbose=True):
     }
 
     if verbose:
-        typer.echo("[SmartQTF Orchestrator Pipeline Demo]")
-        typer.echo("CLI 现在读取 PaperTradingOrchestrator 生成的 PipelineRunReport。")
-        typer.echo()
+        print("[SmartQTF Orchestrator Pipeline Demo]")
+        print("Demo 读取 PaperTradingOrchestrator 生成的 PipelineRunReport。")
+        print()
         for row in rows:
-            typer.echo(f"[BAR {row['bar']}] price={fmt(row['price'])} event={row['event']}")
-            typer.echo("软件内部发生什么:")
-            typer.echo(row["software_note"])
-            typer.echo("关键 JSON:")
-            typer.echo("pipeline_report=" + pretty_json(row["pipeline_report_json"]))
-            typer.echo()
-            typer.echo("---")
-            typer.echo()
-        typer.echo("[SUMMARY]")
-        typer.echo(pretty_json(summary))
+            print(f"[BAR {row['bar']}] price={fmt(row['price'])} event={row['event']}")
+            print("软件内部发生什么:")
+            print(row["software_note"])
+            print("关键 JSON:")
+            print("pipeline_report=" + pretty_json(row["pipeline_report_json"]))
+            print()
+            print("---")
+            print()
+        print("[SUMMARY]")
+        print(pretty_json(summary))
 
     return rows, summary
-
-
-@app.command()
-def main():
-    user_input = typer.prompt("请输入任意数字")
-    if user_input != "1234":
-        typer.echo("INVALID INPUT")
-        raise typer.Exit()
-    run_pipeline(verbose=True)
-
-
-if __name__ == "__main__":
-    app()

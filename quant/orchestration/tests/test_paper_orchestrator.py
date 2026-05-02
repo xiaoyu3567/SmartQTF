@@ -72,25 +72,45 @@ def test_paper_orchestrator_runs_signal_to_execution_and_logging(tmp_path):
         "regime",
         "strategy",
         "decision",
-        "risk",
         "portfolio",
+        "risk",
         "execution",
         "logging",
     ]
     assert all(stage.status == PipelineStageStatus.SUCCEEDED for stage in report.stages)
     portfolio_stage = next(stage for stage in report.stages if stage.stage == "portfolio")
-    allocation_decision = portfolio_stage.output_payload["allocation_decision"]
+    capital_budget = portfolio_stage.output_payload["capital_budget"]
+    risk_stage = next(stage for stage in report.stages if stage.stage == "risk")
+    risk_decision = risk_stage.output_payload["risk_decision"]
+    allocation_decision = risk_stage.output_payload["allocation_decision"]
     assert allocation_decision["approved"] is True
     assert allocation_decision["symbol"] == "BTCUSDT"
-    assert allocation_decision["quantity"] == portfolio_stage.output_payload["allocated_order_intent"]["quantity"]
-    assert "allocation_approved" in allocation_decision["reason_codes"]
+    assert allocation_decision["quantity"] == risk_decision["order_intent"]["quantity"]
+    assert capital_budget["approved"] is True
+    assert "capital_budget_approved" in capital_budget["reason_codes"]
+    assert risk_stage.output_payload["portfolio_execution_context"]["client_order_id"] == (
+        risk_decision["order_intent"]["client_order_id"]
+    )
     assert report.final_output["execution_result"]["status"] == "filled"
-    assert report.final_output["execution_result"]["client_order_id"] == "test-run:BTCUSDT:4:open_long"
+    assert report.final_output["execution_result"]["client_order_id"] == (
+        risk_decision["order_intent"]["client_order_id"]
+    )
+    assert report.final_output["execution_result"]["client_order_id"].endswith(":risk-v2:buy")
     protective_exit_plan = report.final_output["execution_result"]["protective_exit_plan"]
-    assert protective_exit_plan["parent_client_order_id"] == "test-run:BTCUSDT:4:open_long"
+    assert protective_exit_plan["parent_client_order_id"] == report.final_output["execution_result"]["client_order_id"]
     assert protective_exit_plan["quantity"] == report.final_output["execution_result"]["filled_qty"]
     assert protective_exit_plan["stop_loss_price"] == 11.76
     assert protective_exit_plan["take_profit_price"] == 12.48
+    feature_stage = next(stage for stage in report.stages if stage.stage == "feature")
+    assert feature_stage.input_payload["quality_passed"] is True
+    assert feature_stage.input_payload["quality_report_id"].startswith("quality:BTCUSDT:1m:5:")
+    regime_stage = next(stage for stage in report.stages if stage.stage == "regime")
+    assert regime_stage.input_payload["quality_passed"] is True
+    assert regime_stage.input_payload["quality_report_id"].startswith("quality:BTCUSDT:1m:5:")
+    assert regime_stage.output_payload["regime"]["input_refs"]["feature_snapshot_id"] == (
+        "test-run:features:4"
+    )
+    assert regime_stage.output_payload["regime"]["input_refs"]["quality_report"]["passed"] is True
     runtime_health = RuntimeHealthSnapshot.from_payload(report.metadata["runtime_health"])
     assert runtime_health.status == RuntimeHealthStatus.HEALTHY
     assert runtime_health.symbol == "BTCUSDT"
@@ -99,6 +119,18 @@ def test_paper_orchestrator_runs_signal_to_execution_and_logging(tmp_path):
     assert runtime_health.order_failure_rate == 0.0
     assert runtime_health.kill_switch_active is False
     assert "execution" in runtime_health.pipeline_stage_durations_ms
+    assert list(runtime_health.pipeline_stage_durations_ms) == [
+        "data",
+        "data_quality",
+        "feature",
+        "regime",
+        "strategy",
+        "decision",
+        "portfolio",
+        "risk",
+        "execution",
+        "logging",
+    ]
 
     records = logger.read_all()
     assert [record.record_type for record in records] == ["decision", "order", "fill"]
@@ -119,6 +151,7 @@ def test_paper_orchestrator_skips_trade_stages_when_strategy_has_no_signal():
     assert statuses["regime"] == PipelineStageStatus.SUCCEEDED
     assert statuses["strategy"] == PipelineStageStatus.SUCCEEDED
     assert statuses["decision"] == PipelineStageStatus.SKIPPED
+    assert statuses["portfolio"] == PipelineStageStatus.SKIPPED
     assert statuses["risk"] == PipelineStageStatus.SKIPPED
     assert statuses["execution"] == PipelineStageStatus.SKIPPED
     assert report.final_output["signal"] is None
@@ -224,6 +257,8 @@ def test_paper_orchestrator_blocks_pipeline_when_data_quality_fails():
     assert statuses["data"] == PipelineStageStatus.SUCCEEDED
     assert statuses["data_quality"] == PipelineStageStatus.REJECTED
     assert statuses["feature"] == PipelineStageStatus.SKIPPED
+    feature_stage = next(stage for stage in report.stages if stage.stage == "feature")
+    assert feature_stage.skip_reason == "quality_report_failed: data quality rejected klines"
     assert report.final_output["quality_report"]["passed"] is False
     runtime_health = RuntimeHealthSnapshot.from_payload(report.metadata["runtime_health"])
     assert runtime_health.status == RuntimeHealthStatus.DEGRADED

@@ -2,13 +2,16 @@ import json
 from pathlib import Path
 from typing import Iterable, Type
 
-from quant.schemas import (
+from quant.schemas.base import SmartQTFModel
+from quant.schemas.logging import (
     AIDecisionSuggestionLogRecord,
     DecisionLogRecord,
     FillLogRecord,
     OrderLogRecord,
+    PortfolioAllocationLogRecord,
+    RegimeLogRecord,
     RiskDecisionLogRecord,
-    SmartQTFModel,
+    TradeJournalLogRecord,
 )
 
 
@@ -18,6 +21,9 @@ RECORD_TYPES = {
     "order": OrderLogRecord,
     "fill": FillLogRecord,
     "risk": RiskDecisionLogRecord,
+    "regime": RegimeLogRecord,
+    "portfolio": PortfolioAllocationLogRecord,
+    "trade_journal": TradeJournalLogRecord,
 }
 
 

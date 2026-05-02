@@ -83,6 +83,12 @@ def run_diagnostics(
             )
             continue
 
+        if use_proxy is None and not selected_use_proxy:
+            checks.append(_missing_proxy_check(exchange, "public"))
+            if include_private:
+                checks.append(_missing_proxy_check(exchange, "private"))
+            continue
+
         checks.append(_check_public_endpoint(exchange, timeout=timeout, use_proxy=selected_use_proxy))
         if include_private:
             checks.append(_check_private_endpoint(exchange, timeout=timeout, use_proxy=selected_use_proxy))
@@ -117,6 +123,17 @@ def _check_public_endpoint(exchange: str, *, timeout: float, use_proxy: bool) ->
         message="public endpoint reachable",
         latency_ms=latency_ms,
         details={"payload_keys": sorted(payload) if isinstance(payload, dict) else []},
+    )
+
+
+def _missing_proxy_check(exchange: str, scope: str) -> ConnectivityCheck:
+    return ConnectivityCheck(
+        exchange=exchange,
+        scope=scope,
+        status="FAIL",
+        category="proxy",
+        message="set SMARTQTF_USE_PROXY=1 before external exchange connectivity diagnostics",
+        details={"required_env": "SMARTQTF_USE_PROXY"},
     )
 
 

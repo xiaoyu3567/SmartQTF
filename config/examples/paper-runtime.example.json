@@ -71,6 +71,19 @@
       "allow_live_orders": false
     }
   },
+  "environment": {
+    "tier": "paper",
+    "external_exchange_access": false,
+    "private_api_read": false,
+    "live_order_submission": false,
+    "dry_run": true,
+    "requires_proxy": false,
+    "requires_credentials": false,
+    "requires_manual_preflight": false,
+    "requires_human_approval": false,
+    "tests_default_skipped": false,
+    "credential_mode": "none"
+  },
   "logging": {
     "decision_log_path": "logs/paper/decisions.jsonl",
     "order_log_path": "logs/paper/orders.jsonl",

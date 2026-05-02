@@ -1,0 +1,102 @@
+{
+  "name": "sandbox-btc-usdt-okx-testnet",
+  "source": "live",
+  "markets": [
+    {
+      "symbol": "BTC-USDT",
+      "timeframe": "1m",
+      "asset_class": "crypto",
+      "enabled": true,
+      "provider": "okx_public",
+      "metadata": {
+        "venue": "okx",
+        "instrument_type": "SPOT",
+        "sandbox": true
+      }
+    }
+  ],
+  "strategies": [
+    {
+      "symbol": "BTC-USDT",
+      "strategy": "ma_crossover",
+      "route": "default",
+      "version": "1.0",
+      "parameters": {
+        "fast_window": 5,
+        "slow_window": 21,
+        "strategy_id": "sandbox_btc_ma_guarded"
+      }
+    }
+  ],
+  "risk": {
+    "risk_plugin": "default",
+    "kill_switch_enabled": true,
+    "daily_loss_limit_pct": 0.02,
+    "consecutive_loss_limit": 2,
+    "api_failure_rate_limit": 0.15,
+    "max_position_size": 0.05,
+    "max_drawdown": 0.04,
+    "per_symbol_limits": {
+      "BTC-USDT": 0.05
+    }
+  },
+  "broker": {
+    "mode": "live",
+    "broker_plugin": "okx_broker",
+    "account_id": "SANDBOX_ACCOUNT_PLACEHOLDER",
+    "order_log_path": "logs/sandbox/orders.jsonl",
+    "settings": {
+      "venue": "okx",
+      "sandbox": true,
+      "testnet": true,
+      "td_mode": "cash",
+      "target_currency": "base_ccy",
+      "api_key_env": "OKX_SANDBOX_API_KEY",
+      "api_secret_env": "OKX_SANDBOX_API_SECRET",
+      "api_passphrase_env": "OKX_SANDBOX_API_PASSPHRASE",
+      "allow_live_orders": false,
+      "dry_run": true,
+      "require_manual_preflight": true,
+      "credential_mode": "env"
+    }
+  },
+  "environment": {
+    "tier": "exchange_sandbox",
+    "external_exchange_access": true,
+    "private_api_read": true,
+    "live_order_submission": false,
+    "dry_run": true,
+    "requires_proxy": true,
+    "requires_credentials": true,
+    "requires_manual_preflight": true,
+    "requires_human_approval": true,
+    "tests_default_skipped": true,
+    "credential_mode": "env",
+    "metadata": {
+      "sandbox_orders_disabled_by_default": true,
+      "explicit_operator_authorization_required": true
+    }
+  },
+  "logging": {
+    "decision_log_path": "logs/sandbox/decisions.jsonl",
+    "order_log_path": "logs/sandbox/orders.jsonl",
+    "fill_log_path": "logs/sandbox/fills.jsonl",
+    "pipeline_report_dir": "logs/sandbox/pipeline-runs"
+  },
+  "scan": {
+    "enabled": true,
+    "interval_seconds": 600,
+    "candidate_symbols": [
+      "BTC-USDT"
+    ],
+    "holding_symbols": [],
+    "default_timeframe": "1m"
+  },
+  "registry_plugins": {},
+  "metadata": {
+    "initial_balance": 10000.0,
+    "environment": "exchange_sandbox",
+    "contains_real_credentials": false,
+    "requires_explicit_preflight": true
+  }
+}

@@ -74,7 +74,26 @@
       "api_secret_env": "OKX_API_SECRET",
       "api_passphrase_env": "OKX_API_PASSPHRASE",
       "allow_live_orders": false,
-      "require_manual_preflight": true
+      "dry_run": true,
+      "require_manual_preflight": true,
+      "credential_mode": "env"
+    }
+  },
+  "environment": {
+    "tier": "live_dry_run",
+    "external_exchange_access": true,
+    "private_api_read": true,
+    "live_order_submission": false,
+    "dry_run": true,
+    "requires_proxy": true,
+    "requires_credentials": true,
+    "requires_manual_preflight": true,
+    "requires_human_approval": true,
+    "tests_default_skipped": true,
+    "credential_mode": "env",
+    "metadata": {
+      "manual_authorization_required_for_live_trading": true,
+      "default_live_orders_sent": false
     }
   },
   "logging": {

@@ -1,4 +1,4 @@
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel, Field
 
@@ -6,6 +6,8 @@ from quant.schemas.base import SmartQTFModel, TraceContext
 from quant.schemas.decision import AIDecisionSuggestion, DecisionIntent
 from quant.schemas.enums import OrderStatus, TradeSide
 from quant.schemas.feature import FeatureSnapshot
+from quant.schemas.portfolio import PortfolioAllocationDecision
+from quant.schemas.regime import RegimeSnapshot
 from quant.schemas.risk import RiskDecision
 
 if hasattr(BaseModel, "model_validate"):
@@ -40,6 +42,17 @@ class RiskDecisionLogRecord(LogRecordBase):
     reason_codes: list[str]
     risk_decision: RiskDecision
     strategy_id: Optional[str] = None
+    decision_id: Optional[str] = None
+
+
+class RegimeLogRecord(LogRecordBase):
+    record_type: str = "regime"
+    regime_snapshot: RegimeSnapshot
+
+
+class PortfolioAllocationLogRecord(LogRecordBase):
+    record_type: str = "portfolio"
+    allocation: PortfolioAllocationDecision
     decision_id: Optional[str] = None
 
 
@@ -105,6 +118,82 @@ class FillLogRecordBase(LogRecordBase):
         if value < 0.0:
             raise ValueError("commission must be non-negative")
         return value
+
+
+class TradeJournalOrder(SmartQTFModel):
+    timestamp: int
+    order_id: str
+    client_order_id: str
+    symbol: str
+    side: TradeSide
+    status: OrderStatus
+    quantity: float
+    filled_quantity: float = 0.0
+    remaining_quantity: float = 0.0
+    price: Optional[float] = None
+    decision_id: Optional[str] = None
+    metadata: Dict[str, Any] = Field(default_factory=dict)
+
+
+class TradeJournalFill(SmartQTFModel):
+    timestamp: int
+    fill_id: str
+    order_id: str
+    client_order_id: str
+    symbol: str
+    side: TradeSide
+    filled_quantity: float
+    fill_price: float
+    commission: float = 0.0
+    decision_id: Optional[str] = None
+    metadata: Dict[str, Any] = Field(default_factory=dict)
+
+
+class TradeJournalEntry(SmartQTFModel):
+    journal_id: str
+    run_id: str
+    trade_id: str
+    symbol: str
+    status: str
+    strategy_id: Optional[str] = None
+    strategy_version: Optional[str] = None
+    regime: Optional[str] = None
+    regime_snapshot_id: Optional[str] = None
+    feature_snapshot_id: Optional[str] = None
+    feature_values: Dict[str, Any] = Field(default_factory=dict)
+    decision_ids: List[str] = Field(default_factory=list)
+    order_ids: List[str] = Field(default_factory=list)
+    client_order_ids: List[str] = Field(default_factory=list)
+    risk_decision_ids: List[str] = Field(default_factory=list)
+    allocation_ids: List[str] = Field(default_factory=list)
+    decision_reason_codes: List[str] = Field(default_factory=list)
+    risk_approved: Optional[bool] = None
+    risk_reason_codes: List[str] = Field(default_factory=list)
+    entry_side: Optional[TradeSide] = None
+    exit_side: Optional[TradeSide] = None
+    entry_quantity: float = 0.0
+    exit_quantity: float = 0.0
+    entry_avg_price: Optional[float] = None
+    exit_avg_price: Optional[float] = None
+    entry_notional: float = 0.0
+    exit_notional: float = 0.0
+    expected_entry_price: Optional[float] = None
+    expected_exit_price: Optional[float] = None
+    entry_slippage: Optional[float] = None
+    exit_slippage: Optional[float] = None
+    fees: float = 0.0
+    gross_pnl: float = 0.0
+    net_pnl: float = 0.0
+    realized_pnl_source: str = "calculated_from_fills"
+    orders: List[TradeJournalOrder] = Field(default_factory=list)
+    fills: List[TradeJournalFill] = Field(default_factory=list)
+    timeline: List[Dict[str, Any]] = Field(default_factory=list)
+    metadata: Dict[str, Any] = Field(default_factory=dict)
+
+
+class TradeJournalLogRecord(LogRecordBase):
+    record_type: str = "trade_journal"
+    journal_entry: TradeJournalEntry
 
 
 if hasattr(BaseModel, "model_validate"):

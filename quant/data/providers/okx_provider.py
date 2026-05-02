@@ -3,6 +3,8 @@ from typing import Optional
 from adapters.exchange.okx import OKXAdapter
 from quant.data.providers.mock_provider import DataProvider
 from quant.data.schemas.market import KlineBatch
+from quant.data.storage import TradeStore
+from quant.data.trade_sync import get_netflow_from_trade_store
 from quant.data.universe import build_universe_snapshot
 from quant.schemas import (
     FundingRateSnapshot,
@@ -17,8 +19,9 @@ from quant.schemas import (
 class OKXDataProvider(DataProvider):
     """OKX public market data provider returning typed SmartQTF payloads."""
 
-    def __init__(self, adapter: Optional[OKXAdapter] = None):
+    def __init__(self, adapter: Optional[OKXAdapter] = None, trade_store: Optional[TradeStore] = None):
         self.adapter = adapter or OKXAdapter(require_credentials=False)
+        self.trade_store = trade_store
 
     def get_klines(
         self,
@@ -64,8 +67,40 @@ class OKXDataProvider(DataProvider):
     def get_orderbook(self, symbol: str, depth: int = 20) -> OrderBookSnapshot:
         return self.adapter.get_orderbook(symbol=symbol, depth=depth)
 
-    def get_netflow(self, symbol: str, timeframe: str = "1m", limit: int = 100) -> NetflowSnapshot:
-        return self.adapter.get_netflow(symbol=symbol, timeframe=timeframe, limit=limit)
+    def get_netflow(
+        self,
+        symbol: str,
+        timeframe: str = "1m",
+        limit: int = 100,
+        *,
+        end_ts: Optional[int] = None,
+        max_history_pages: int = 20,
+    ) -> NetflowSnapshot:
+        if self.trade_store is not None:
+            if end_ts is None:
+                existing = self.trade_store.load_trades(symbol=symbol)
+                if existing:
+                    end_ts = existing[-1].timestamp
+                else:
+                    recent = self.adapter.get_trades(symbol=symbol, limit=limit)
+                    if recent:
+                        end_ts = recent[-1].timestamp
+            return get_netflow_from_trade_store(
+                store=self.trade_store,
+                symbol=symbol,
+                timeframe=timeframe,
+                end_ts=end_ts,
+                backfill_source=self.adapter,
+                venue="okx_trade_store",
+                limit=limit,
+                max_history_pages=max_history_pages,
+            )
+        return self.adapter.get_netflow(
+            symbol=symbol,
+            timeframe=timeframe,
+            limit=limit,
+            max_history_pages=max_history_pages,
+        )
 
     def discover_universe(
         self,

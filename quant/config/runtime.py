@@ -1,4 +1,5 @@
 import json
+from enum import Enum
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -14,6 +15,16 @@ except ImportError:
 from quant.registry import PluginKind
 from quant.schemas import AssetClass, PayloadSource, UniverseFilterConfig
 from quant.schemas.base import SmartQTFModel
+
+
+class RuntimeEnvironmentTier(str, Enum):
+    UNSPECIFIED = "unspecified"
+    MOCK = "mock"
+    PAPER = "paper"
+    EXCHANGE_SANDBOX = "exchange_sandbox"
+    LIVE_READ_ONLY = "live_read_only"
+    LIVE_DRY_RUN = "live_dry_run"
+    LIVE_TRADING = "live_trading"
 
 
 class MarketConfigBase(SmartQTFModel):
@@ -144,6 +155,94 @@ class BrokerConfigBase(SmartQTFModel):
         return values
 
 
+class EnvironmentConfigBase(SmartQTFModel):
+    tier: RuntimeEnvironmentTier = RuntimeEnvironmentTier.UNSPECIFIED
+    external_exchange_access: bool = False
+    private_api_read: bool = False
+    live_order_submission: bool = False
+    dry_run: bool = True
+    requires_proxy: bool = False
+    requires_credentials: bool = False
+    requires_manual_preflight: bool = False
+    requires_human_approval: bool = False
+    tests_default_skipped: bool = False
+    credential_mode: str = "none"
+    metadata: Dict[str, Any] = Field(default_factory=dict)
+
+    @classmethod
+    def validate_environment_values(cls, values):
+        tier = cls._enum_value(values.get("tier") or RuntimeEnvironmentTier.UNSPECIFIED)
+        live_order_submission = values.get("live_order_submission") is True
+        dry_run = values.get("dry_run") is not False
+        external_exchange_access = values.get("external_exchange_access") is True
+        requires_proxy = values.get("requires_proxy") is True
+        requires_credentials = values.get("requires_credentials") is True
+        requires_manual_preflight = values.get("requires_manual_preflight") is True
+        requires_human_approval = values.get("requires_human_approval") is True
+        tests_default_skipped = values.get("tests_default_skipped") is True
+        credential_mode = str(values.get("credential_mode") or "none").strip().lower()
+        values["credential_mode"] = credential_mode
+
+        live_tiers = {
+            RuntimeEnvironmentTier.EXCHANGE_SANDBOX.value,
+            RuntimeEnvironmentTier.LIVE_READ_ONLY.value,
+            RuntimeEnvironmentTier.LIVE_DRY_RUN.value,
+            RuntimeEnvironmentTier.LIVE_TRADING.value,
+        }
+
+        if live_order_submission and tier != RuntimeEnvironmentTier.LIVE_TRADING.value:
+            raise ValueError("live_order_submission is only valid for live_trading tier")
+        if live_order_submission and dry_run:
+            raise ValueError("live_order_submission requires dry_run=false")
+
+        if tier in live_tiers:
+            if not external_exchange_access:
+                raise ValueError("exchange/live tiers must mark external_exchange_access=true")
+            if not requires_proxy:
+                raise ValueError("exchange/live tiers must require proxy")
+            if not requires_credentials:
+                raise ValueError("exchange/live tiers must require credentials")
+            if not requires_human_approval:
+                raise ValueError("exchange/live tiers must require human approval")
+            if not tests_default_skipped:
+                raise ValueError("exchange/live tiers must keep external tests skipped by default")
+            if credential_mode in {"", "none", "fixture"}:
+                raise ValueError("exchange/live tiers require a non-fixture credential_mode")
+
+        if tier in {
+            RuntimeEnvironmentTier.LIVE_DRY_RUN.value,
+            RuntimeEnvironmentTier.LIVE_TRADING.value,
+        } and not requires_manual_preflight:
+            raise ValueError("live dry-run and live trading tiers require manual preflight")
+
+        if tier == RuntimeEnvironmentTier.LIVE_READ_ONLY.value and live_order_submission:
+            raise ValueError("live_read_only tier cannot submit live orders")
+        if tier == RuntimeEnvironmentTier.LIVE_DRY_RUN.value and live_order_submission:
+            raise ValueError("live_dry_run tier cannot submit live orders")
+        if tier == RuntimeEnvironmentTier.LIVE_TRADING.value:
+            if not live_order_submission:
+                raise ValueError("live_trading tier must explicitly set live_order_submission=true")
+            if dry_run:
+                raise ValueError("live_trading tier requires dry_run=false")
+
+        if tier in {
+            RuntimeEnvironmentTier.MOCK.value,
+            RuntimeEnvironmentTier.PAPER.value,
+        }:
+            if external_exchange_access:
+                raise ValueError("mock and paper tiers must not require external exchange access")
+            if requires_credentials:
+                raise ValueError("mock and paper tiers must not require credentials")
+            if live_order_submission:
+                raise ValueError("mock and paper tiers cannot submit live orders")
+
+        return values
+
+    @staticmethod
+    def _enum_value(value):
+        return value.value if hasattr(value, "value") else str(value)
+
+
 class LoggingConfig(SmartQTFModel):
     decision_log_path: str = "logs/decisions.jsonl"
     order_log_path: str = "logs/orders.jsonl"
@@ -196,6 +295,76 @@ class ScanConfigBase(SmartQTFModel):
         return values
 
 
+class MultiTimeframeConfigBase(SmartQTFModel):
+    enabled: bool = False
+    execution_timeframe: Optional[str] = None
+    context_timeframes: List[str] = Field(default_factory=list)
+    bar_limits: Dict[str, int] = Field(default_factory=dict)
+    default_bar_limit: int = 100
+    venue: str = "runtime"
+    metadata: Dict[str, Any] = Field(default_factory=dict)
+
+    @classmethod
+    def validate_multi_timeframe_values(cls, values):
+        enabled = values.get("enabled") is True
+        execution_timeframe = values.get("execution_timeframe")
+        context_timeframes = values.get("context_timeframes") or []
+        bar_limits = values.get("bar_limits") or {}
+        default_bar_limit = values.get("default_bar_limit")
+        venue = values.get("venue")
+
+        if execution_timeframe is not None:
+            execution_timeframe = str(execution_timeframe).strip()
+            if not execution_timeframe:
+                raise ValueError("multi_timeframe execution_timeframe must not be empty")
+            values["execution_timeframe"] = execution_timeframe
+
+        normalized_contexts = []
+        seen_contexts = set()
+        for timeframe in context_timeframes:
+            clean_timeframe = str(timeframe).strip()
+            if not clean_timeframe:
+                raise ValueError("multi_timeframe context_timeframes must not contain empty values")
+            if clean_timeframe in seen_contexts:
+                raise ValueError("multi_timeframe context_timeframes must be unique")
+            normalized_contexts.append(clean_timeframe)
+            seen_contexts.add(clean_timeframe)
+        values["context_timeframes"] = normalized_contexts
+
+        if execution_timeframe is not None and execution_timeframe in seen_contexts:
+            raise ValueError("multi_timeframe context_timeframes must not include execution_timeframe")
+
+        if default_bar_limit is not None and int(default_bar_limit) <= 0:
+            raise ValueError("multi_timeframe default_bar_limit must be positive")
+        if default_bar_limit is not None:
+            values["default_bar_limit"] = int(default_bar_limit)
+
+        normalized_limits = {}
+        for timeframe, limit in bar_limits.items():
+            clean_timeframe = str(timeframe).strip()
+            if not clean_timeframe:
+                raise ValueError("multi_timeframe bar_limits keys must not be empty")
+            numeric_limit = int(limit)
+            if numeric_limit <= 0:
+                raise ValueError("multi_timeframe bar_limits values must be positive")
+            normalized_limits[clean_timeframe] = numeric_limit
+        values["bar_limits"] = normalized_limits
+
+        if venue is not None:
+            values["venue"] = str(venue).strip() or "runtime"
+
+        if enabled:
+            if execution_timeframe is None:
+                raise ValueError("multi_timeframe enabled requires execution_timeframe")
+            if not normalized_contexts:
+                raise ValueError("multi_timeframe enabled requires context_timeframes")
+
+        return values
+
+    def limit_for_timeframe(self, timeframe):
+        return int(self.bar_limits.get(timeframe, self.default_bar_limit))
+
+
 class RuntimeConfigBase(SmartQTFModel):
     name: str = "default"
     source: PayloadSource = PayloadSource.PAPER
@@ -203,8 +372,10 @@ class RuntimeConfigBase(SmartQTFModel):
     strategies: List[StrategyBindingBase]
     risk: RiskConfigBase = Field(default_factory=RiskConfigBase)
     broker: BrokerConfigBase = Field(default_factory=BrokerConfigBase)
+    environment: EnvironmentConfigBase = Field(default_factory=EnvironmentConfigBase)
     logging: LoggingConfig = Field(default_factory=LoggingConfig)
     scan: ScanConfigBase = Field(default_factory=ScanConfigBase)
+    multi_timeframe: MultiTimeframeConfigBase = Field(default_factory=MultiTimeframeConfigBase)
     registry_plugins: Dict[PluginKind, str] = Field(default_factory=dict)
     metadata: Dict[str, Any] = Field(default_factory=dict)
 
@@ -235,7 +406,115 @@ class RuntimeConfigBase(SmartQTFModel):
 
         if broker is not None and source is not None and broker.mode != source:
             raise ValueError("broker mode must match runtime source")
+        cls.validate_multi_timeframe_runtime_values(values)
+        cls.validate_environment_runtime_values(values)
         return values
+
+    @classmethod
+    def validate_multi_timeframe_runtime_values(cls, values):
+        multi_timeframe = values.get("multi_timeframe")
+        if multi_timeframe is None:
+            return values
+        enabled = cls._field_value(multi_timeframe, "enabled", False) is True
+        if not enabled:
+            return values
+
+        execution_timeframe = cls._field_value(multi_timeframe, "execution_timeframe", None)
+        markets = values.get("markets") or []
+        enabled_markets = [market for market in markets if cls._field_value(market, "enabled", True)]
+        if execution_timeframe is None:
+            raise ValueError("multi_timeframe enabled requires execution_timeframe")
+        if not any(cls._field_value(market, "timeframe", None) == execution_timeframe for market in enabled_markets):
+            raise ValueError("multi_timeframe execution_timeframe must match an enabled market timeframe")
+        return values
+
+    @classmethod
+    def apply_runtime_config_normalized_values(cls, target, values):
+        multi_timeframe = values.get("multi_timeframe")
+        if multi_timeframe is not None and getattr(target, "multi_timeframe", None) is not multi_timeframe:
+            target.multi_timeframe = multi_timeframe
+        environment = values.get("environment")
+        if environment is not None and getattr(target, "environment", None) is not environment:
+            target.environment = environment
+        return target
+
+    @classmethod
+    def validate_environment_runtime_values(cls, values):
+        environment = values.get("environment")
+        if environment is None:
+            return values
+
+        tier = cls._field_value(environment, "tier", RuntimeEnvironmentTier.UNSPECIFIED)
+        tier = tier.value if hasattr(tier, "value") else str(tier)
+        if tier == RuntimeEnvironmentTier.UNSPECIFIED.value:
+            return values
+
+        source = cls._field_value(values.get("source"), "value", values.get("source"))
+        source = source.value if hasattr(source, "value") else str(source)
+        broker = values.get("broker")
+        broker_settings = cls._field_value(broker, "settings", {}) or {}
+        broker_mode = cls._field_value(broker, "mode", None)
+        broker_mode = broker_mode.value if hasattr(broker_mode, "value") else str(broker_mode)
+
+        if values.get("metadata", {}).get("contains_real_credentials") is True:
+            raise ValueError("runtime config must not embed real credentials")
+
+        if tier == RuntimeEnvironmentTier.MOCK.value and source not in {
+            PayloadSource.BACKTEST.value,
+            PayloadSource.PAPER.value,
+        }:
+            raise ValueError("mock environment tier only supports backtest or paper source")
+        if tier == RuntimeEnvironmentTier.PAPER.value and source != PayloadSource.PAPER.value:
+            raise ValueError("paper environment tier requires paper source")
+
+        exchange_live_tiers = {
+            RuntimeEnvironmentTier.EXCHANGE_SANDBOX.value,
+            RuntimeEnvironmentTier.LIVE_READ_ONLY.value,
+            RuntimeEnvironmentTier.LIVE_DRY_RUN.value,
+            RuntimeEnvironmentTier.LIVE_TRADING.value,
+        }
+        if tier in exchange_live_tiers and source != PayloadSource.LIVE.value:
+            raise ValueError("exchange/live environment tiers require live source")
+        if tier in exchange_live_tiers and broker_mode != PayloadSource.LIVE.value:
+            raise ValueError("exchange/live environment tiers require live broker mode")
+
+        allow_live_orders = broker_settings.get("allow_live_orders")
+        dry_run_setting = broker_settings.get("dry_run")
+        require_manual_preflight = broker_settings.get("require_manual_preflight")
+        credential_mode = broker_settings.get("credential_mode")
+        if credential_mode is None:
+            credential_mode = cls._field_value(environment, "credential_mode", None)
+        credential_mode = str(credential_mode or "").strip().lower()
+
+        if tier in {
+            RuntimeEnvironmentTier.EXCHANGE_SANDBOX.value,
+            RuntimeEnvironmentTier.LIVE_READ_ONLY.value,
+            RuntimeEnvironmentTier.LIVE_DRY_RUN.value,
+        } and allow_live_orders is not False:
+            raise ValueError(f"{tier} environment tier requires broker.settings.allow_live_orders=false")
+
+        if tier == RuntimeEnvironmentTier.LIVE_DRY_RUN.value and dry_run_setting is False:
+            raise ValueError("live_dry_run environment tier must not set broker.settings.dry_run=false")
+
+        if tier == RuntimeEnvironmentTier.LIVE_TRADING.value:
+            if allow_live_orders is not True:
+                raise ValueError("live_trading environment tier requires broker.settings.allow_live_orders=true")
+            if dry_run_setting is not False:
+                raise ValueError("live_trading environment tier requires broker.settings.dry_run=false")
+            if require_manual_preflight is not True:
+                raise ValueError("live_trading environment tier requires broker.settings.require_manual_preflight=true")
+            if credential_mode in {"", "none", "fixture"}:
+                raise ValueError("live_trading environment tier requires non-fixture credential_mode")
+
+        return values
+
+    @staticmethod
+    def _field_value(target, name, default=None):
+        if target is None:
+            return default
+        if isinstance(target, dict):
+            return target.get(name, default)
+        return getattr(target, name, default)
 
     def enabled_markets(self):
         return [market for market in self.markets if market.enabled]
@@ -289,6 +568,26 @@ if hasattr(BaseModel, "model_validate"):
             self.live_mode_requires_account(values)
             return self
 
+    class EnvironmentConfig(EnvironmentConfigBase):
+        @model_validator(mode="after")
+        def validate_values(self):
+            values = self.__dict__.copy()
+            self.validate_environment_values(values)
+            self.credential_mode = values["credential_mode"]
+            return self
+
+    class MultiTimeframeConfig(MultiTimeframeConfigBase):
+        @model_validator(mode="after")
+        def validate_values(self):
+            values = self.__dict__.copy()
+            self.validate_multi_timeframe_values(values)
+            self.execution_timeframe = values["execution_timeframe"]
+            self.context_timeframes = values["context_timeframes"]
+            self.bar_limits = values["bar_limits"]
+            self.default_bar_limit = values["default_bar_limit"]
+            self.venue = values["venue"]
+            return self
+
     class ScanConfig(ScanConfigBase):
         @field_validator("candidate_symbols", "holding_symbols")
         @classmethod
@@ -308,7 +607,9 @@ if hasattr(BaseModel, "model_validate"):
         strategies: List[StrategyBinding]
         risk: RiskConfig = Field(default_factory=RiskConfig)
         broker: BrokerConfig = Field(default_factory=BrokerConfig)
+        environment: EnvironmentConfig = Field(default_factory=EnvironmentConfig)
         scan: ScanConfig = Field(default_factory=ScanConfig)
+        multi_timeframe: MultiTimeframeConfig = Field(default_factory=MultiTimeframeConfig)
 
         @field_validator("markets", "strategies")
         @classmethod
@@ -321,6 +622,7 @@ if hasattr(BaseModel, "model_validate"):
         def validate_values(self):
             values = self.__dict__.copy()
             self.validate_runtime_config(values)
+            self.apply_runtime_config_normalized_values(self, values)
             return self
 
 else:
@@ -356,6 +658,16 @@ else:
         def validate_values(cls, values):
             return cls.live_mode_requires_account(values)
 
+    class EnvironmentConfig(EnvironmentConfigBase):
+        @root_validator
+        def validate_values(cls, values):
+            return cls.validate_environment_values(values)
+
+    class MultiTimeframeConfig(MultiTimeframeConfigBase):
+        @root_validator
+        def validate_values(cls, values):
+            return cls.validate_multi_timeframe_values(values)
+
     class ScanConfig(ScanConfigBase):
         @validator("candidate_symbols", "holding_symbols", pre=True)
         def validate_scan_symbols(cls, value):
@@ -370,7 +682,9 @@ else:
         strategies: List[StrategyBinding]
         risk: RiskConfig = Field(default_factory=RiskConfig)
         broker: BrokerConfig = Field(default_factory=BrokerConfig)
+        environment: EnvironmentConfig = Field(default_factory=EnvironmentConfig)
         scan: ScanConfig = Field(default_factory=ScanConfig)
+        multi_timeframe: MultiTimeframeConfig = Field(default_factory=MultiTimeframeConfig)
 
         @validator("markets", "strategies")
         def validate_non_empty_list(cls, value):

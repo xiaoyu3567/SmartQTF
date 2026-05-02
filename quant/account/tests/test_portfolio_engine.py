@@ -30,18 +30,27 @@ def make_trace(symbol="BTCUSDT"):
     )
 
 
-def make_order(client_order_id, symbol="BTCUSDT", quantity=10.0, price=100.0):
+def make_order(
+    client_order_id,
+    symbol="BTCUSDT",
+    quantity=10.0,
+    price=100.0,
+    side=TradeSide.BUY,
+    strategy_id="trend-ma",
+    reduce_only=False,
+):
     return PortfolioOrderRequest(
-        strategy_id="trend-ma",
+        strategy_id=strategy_id,
         order_intent=OrderIntent(
             order_intent_id=f"intent-{client_order_id}",
             decision_id=f"decision-{client_order_id}",
             client_order_id=client_order_id,
             symbol=symbol,
-            side=TradeSide.BUY,
+            side=side,
             order_type=OrderKind.MARKET,
             quantity=quantity,
             time_in_force=TimeInForce.GTC,
+            reduce_only=reduce_only,
             created_at=1710000000,
             trace=make_trace(symbol),
         ),
@@ -148,3 +157,110 @@ def test_portfolio_engine_rejects_allocations_below_minimum():
     assert allocation.approved is False
     assert allocation.allocated_quantity == 0.0
     assert "portfolio_allocation_below_minimum" in allocation.reason_codes
+
+
+def test_portfolio_engine_merges_same_symbol_same_direction_orders_under_symbol_limit():
+    decision = PortfolioEngine().allocate(
+        make_request(
+            orders=[
+                make_order("coid-001", quantity=20.0, strategy_id="trend-ma"),
+                make_order("coid-002", quantity=20.0, strategy_id="breakout"),
+            ],
+            max_symbol_weight=0.25,
+            max_strategy_weight=0.50,
+            max_correlation_group_weight=0.80,
+        )
+    )
+
+    assert decision.approved is True
+    assert decision.allocated_notional == 2500.0
+    assert decision.remaining_cash == 2500.0
+
+    first, second = decision.allocations
+    assert first.approved is True
+    assert second.approved is True
+    assert first.allocated_notional == 1250.0
+    assert second.allocated_notional == 1250.0
+    assert first.allocated_quantity == 12.5
+    assert second.allocated_quantity == 12.5
+    assert "portfolio_same_direction_merged" in first.reason_codes
+    assert "portfolio_same_direction_merged" in second.reason_codes
+    assert "symbol_risk_budget_capped" in first.reason_codes
+    assert "symbol_risk_budget_capped" in second.reason_codes
+
+
+def test_portfolio_engine_offsets_opposite_open_orders_and_rejects_losing_side():
+    decision = PortfolioEngine().allocate(
+        make_request(
+            orders=[
+                make_order("coid-buy", quantity=10.0, strategy_id="trend-ma"),
+                make_order(
+                    "coid-sell",
+                    quantity=7.0,
+                    side=TradeSide.SELL,
+                    strategy_id="mean-revert",
+                ),
+            ],
+            max_symbol_weight=0.50,
+            max_strategy_weight=0.50,
+            max_correlation_group_weight=0.80,
+        )
+    )
+
+    buy_allocation, sell_allocation = decision.allocations
+    assert decision.approved is True
+    assert decision.allocated_notional == 300.0
+    assert buy_allocation.approved is True
+    assert buy_allocation.side == TradeSide.BUY
+    assert buy_allocation.allocated_quantity == 3.0
+    assert "portfolio_opposite_side_netting_applied" in buy_allocation.reason_codes
+    assert sell_allocation.approved is False
+    assert sell_allocation.side == TradeSide.SELL
+    assert sell_allocation.allocated_quantity == 0.0
+    assert "portfolio_opposite_side_offset" in sell_allocation.reason_codes
+    assert not any(
+        allocation.approved and allocation.side == TradeSide.SELL
+        for allocation in decision.allocations
+    )
+
+
+def test_portfolio_engine_prioritizes_reduce_only_before_new_exposure():
+    decision = PortfolioEngine().allocate(
+        make_request(
+            available_cash=2000.0,
+            orders=[
+                make_order("coid-open", quantity=20.0, strategy_id="breakout"),
+                make_order(
+                    "coid-close",
+                    quantity=5.0,
+                    side=TradeSide.SELL,
+                    strategy_id="trend-ma",
+                    reduce_only=True,
+                ),
+            ],
+            positions=[
+                PortfolioPositionSnapshot(
+                    symbol="BTCUSDT",
+                    strategy_id="trend-ma",
+                    side=TradeSide.BUY,
+                    quantity=25.0,
+                    avg_price=100.0,
+                    market_price=100.0,
+                    correlation_group="crypto-major",
+                )
+            ],
+            max_symbol_weight=0.25,
+            max_strategy_weight=0.50,
+            max_correlation_group_weight=0.80,
+        )
+    )
+
+    open_allocation, close_allocation = decision.allocations
+    assert decision.approved is True
+    assert close_allocation.approved is True
+    assert close_allocation.side == TradeSide.SELL
+    assert close_allocation.allocated_quantity == 5.0
+    assert "portfolio_reduce_only_priority" in close_allocation.reason_codes
+    assert open_allocation.approved is True
+    assert open_allocation.allocated_quantity == 5.0
+    assert "symbol_risk_budget_capped" in open_allocation.reason_codes

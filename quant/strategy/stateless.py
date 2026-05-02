@@ -9,6 +9,7 @@ class StatelessStrategyValidationResult:
     strategy_id: str
     passed: bool
     errors: tuple[str, ...] = ()
+    signal: StrategySignal | None = None
 
 
 class StatelessStrategyValidator:
@@ -42,24 +43,28 @@ class StatelessStrategyValidator:
         if forbidden:
             errors.append("strategy holds forbidden cross-layer/state attributes: " + ", ".join(forbidden))
 
-        before = deepcopy(vars(strategy))
-        try:
-            signal = strategy.generate_signal(features, index)
-        except Exception as exc:
-            errors.append(f"generate_signal raised {exc.__class__.__name__}: {exc}")
-            signal = None
-        after = vars(strategy)
+        signal = None
+        if not missing and not forbidden:
+            before = deepcopy(vars(strategy))
+            try:
+                signal = strategy.generate_signal(features, index)
+            except Exception as exc:
+                errors.append(f"generate_signal raised {exc.__class__.__name__}: {exc}")
+                signal = None
+            after = vars(strategy)
 
-        if before != after:
-            errors.append("generate_signal mutated strategy instance state")
+            if before != after:
+                errors.append("generate_signal mutated strategy instance state")
 
-        if signal is not None and not isinstance(signal, StrategySignal):
-            errors.append("generate_signal must return StrategySignal or None")
+            if signal is not None and not isinstance(signal, StrategySignal):
+                errors.append("generate_signal must return StrategySignal or None")
+                signal = None
 
         return StatelessStrategyValidationResult(
             strategy_id=strategy_id,
             passed=not errors,
             errors=tuple(errors),
+            signal=signal if not errors else None,
         )
 
 

@@ -4,6 +4,7 @@ from pydantic import Field
 
 from quant.data.quality import KlineQualityReport, validate_klines
 from quant.data.schemas.market import Kline
+from quant.utils.time_format import add_display_times
 from quant.data.storage import KlineStore
 from quant.schemas.base import SmartQTFModel
 
@@ -53,6 +54,9 @@ class KlineSyncResult(SmartQTFModel):
     @property
     def passed(self) -> bool:
         return self.quality_report.passed
+
+    def to_display_payload(self):
+        return add_display_times(self.to_payload())
 
 
 class KlineSyncQualityError(ValueError):

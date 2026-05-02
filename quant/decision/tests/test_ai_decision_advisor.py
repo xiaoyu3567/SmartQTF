@@ -3,6 +3,7 @@ import json
 from pydantic import ValidationError
 
 from quant.decision import AI_DECISION_OUTPUT_SCHEMA, AIDecisionAdvisor, FixtureAIClient
+from quant.decision.ai_advisor import ChatCompletionsJSONClient, normalize_openai_chat_completions_endpoint
 from quant.schemas import (
     AIDecisionAdvisorRequest,
     AssetClass,
@@ -109,7 +110,33 @@ def test_ai_decision_advisor_calls_model_and_sandboxes_replayable_suggestion():
     assert suggestion.metadata["response_source"] == "ai_model"
     assert client.calls[0]["model_name"] == "test-json-model"
     assert client.calls[0]["response_schema"] == AI_DECISION_OUTPUT_SCHEMA
+    assert "required_candidate_keys" in client.calls[0]["response_schema"]
+    assert "decision_id" in client.calls[0]["messages"][0]["content"]
     assert "Risk, Portfolio, and Execution" in client.calls[0]["messages"][0]["content"]
+
+
+def test_openai_chat_completions_endpoint_normalization_accepts_provider_roots():
+    assert (
+        normalize_openai_chat_completions_endpoint("https://codex.0u0o.com")
+        == "https://codex.0u0o.com/v1/chat/completions"
+    )
+    assert (
+        normalize_openai_chat_completions_endpoint("https://codex.0u0o.com/v1")
+        == "https://codex.0u0o.com/v1/chat/completions"
+    )
+    assert (
+        normalize_openai_chat_completions_endpoint("https://codex.0u0o.com/v1/chat/completions")
+        == "https://codex.0u0o.com/v1/chat/completions"
+    )
+    client = ChatCompletionsJSONClient("https://codex.0u0o.com", api_key="test-key", use_proxy=False)
+    assert client.endpoint == "https://codex.0u0o.com/v1/chat/completions"
+
+
+def test_ai_decision_output_schema_documents_complete_decision_intent_fields():
+    required = set(AI_DECISION_OUTPUT_SCHEMA["required_candidate_keys"])
+    assert {"decision_id", "timestamp", "strategy_id", "strategy_version", "action", "order_type", "quantity"} <= required
+    assert "decision" in AI_DECISION_OUTPUT_SCHEMA["forbidden_candidate_keys"]
+    assert AI_DECISION_OUTPUT_SCHEMA["example"]["candidate"]["action"] == "hold"
 
 
 def test_ai_decision_advisor_accepts_openai_compatible_json_text_response():

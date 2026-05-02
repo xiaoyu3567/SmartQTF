@@ -43,6 +43,8 @@ class RelativeStrengthIndex(Feature):
         average_gain = sum(gains) / self.window
         average_loss = sum(losses) / self.window
 
+        if average_gain == 0 and average_loss == 0:
+            return 50.0
         if average_loss == 0:
             return 100.0
 

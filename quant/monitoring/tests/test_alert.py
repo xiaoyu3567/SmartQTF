@@ -8,7 +8,10 @@ if str(PROJECT_ROOT) not in sys.path:
 from pydantic import ValidationError
 
 from quant.monitoring import (
+    AlertActionJsonlWriter,
     AlertJsonlWriter,
+    HealthAlertActionPolicy,
+    HealthAlertActionType,
     HealthAlertEvaluator,
     HealthAlertSeverity,
     HealthAlertThresholds,
@@ -174,6 +177,119 @@ def test_alert_writer_persists_replayable_jsonl(tmp_path):
     assert len(alerts) == 2
     assert [alert.to_payload() for alert in restored] == [alert.to_payload() for alert in alerts]
     assert [alert.alert_id for alert in seen] == [alert.alert_id for alert in alerts]
+
+
+def test_alert_action_policy_maps_critical_alerts_to_safe_actions_and_audit_log(tmp_path):
+    path = tmp_path / "alert-actions.jsonl"
+    writer = AlertActionJsonlWriter(path)
+    seen = []
+    policy = HealthAlertActionPolicy(audit_writer=writer, notifier=seen.append)
+
+    alerts = HealthAlertEvaluator(
+        thresholds=HealthAlertThresholds(
+            critical_api_latency_ms=1000,
+            critical_order_failure_rate=0.2,
+            critical_abs_pnl_change=50.0,
+        )
+    ).evaluate(
+        make_snapshot(
+            data_latency_ms=5000,
+            order_failure_rate=0.4,
+            alerts=["latency", "order_failure"],
+        ),
+        pnl_change=-120.0,
+    )
+
+    actions = policy.evaluate(alerts)
+    restored = writer.read_all()
+    by_alert = {}
+    for action in actions:
+        by_alert.setdefault(action.alert_code, []).append(action.action_type)
+
+    assert by_alert["api_latency_high"] == [
+        HealthAlertActionType.ENTER_SAFE_MODE,
+        HealthAlertActionType.PAUSE_NEW_ENTRIES,
+    ]
+    assert HealthAlertActionType.BLOCK_EXECUTION in by_alert["order_failure_rate_high"]
+    assert HealthAlertActionType.TRIGGER_KILL_SWITCH in by_alert["order_failure_rate_high"]
+    assert HealthAlertActionType.REDUCE_EXPOSURE in by_alert["pnl_change_abnormal"]
+    assert all(action.broker_called is False for action in actions)
+    assert all(action.live_orders_sent is False for action in actions)
+    assert [action.to_payload() for action in restored] == [action.to_payload() for action in actions]
+    assert [action.action_id for action in seen] == [action.action_id for action in actions]
+
+
+def test_alert_action_policy_maps_connectivity_credential_and_ws_failures():
+    connectivity_report = {
+        "success": False,
+        "proxy": {"enabled": True, "SMARTQTF_USE_PROXY": "1"},
+        "checks": [
+            {
+                "exchange": "okx",
+                "scope": "private",
+                "status": "FAIL",
+                "category": "ws_disconnect",
+                "message": "websocket disconnected",
+            },
+            {
+                "exchange": "okx",
+                "scope": "private",
+                "status": "FAIL",
+                "category": "polling_failure",
+                "message": "rest polling stale",
+            },
+            {
+                "exchange": "okx",
+                "scope": "private",
+                "status": "FAIL",
+                "category": "credential_configuration",
+                "message": "invalid api key",
+            },
+        ],
+    }
+
+    alerts = HealthAlertEvaluator().evaluate(
+        make_snapshot(data_latency_ms=0, order_failure_rate=0.0),
+        connectivity_report=connectivity_report,
+    )
+    actions = HealthAlertActionPolicy().evaluate(alerts)
+    by_category = {}
+    for action in actions:
+        category = action.metadata["source_alert"]["metadata"]["connectivity_category"]
+        by_category.setdefault(category, []).append(action.action_type)
+
+    assert by_category["ws_disconnect"] == [
+        HealthAlertActionType.ENTER_SAFE_MODE,
+        HealthAlertActionType.PAUSE_NEW_ENTRIES,
+    ]
+    assert by_category["polling_failure"] == [
+        HealthAlertActionType.ENTER_SAFE_MODE,
+        HealthAlertActionType.PAUSE_NEW_ENTRIES,
+    ]
+    assert HealthAlertActionType.BLOCK_EXECUTION in by_category["credential_configuration"]
+    assert HealthAlertActionType.TRIGGER_KILL_SWITCH in by_category["credential_configuration"]
+
+
+def test_alert_action_policy_maps_reconciliation_anomaly_without_broker_call():
+    alerts = HealthAlertEvaluator().evaluate(
+        make_snapshot(
+            data_latency_ms=0,
+            order_failure_rate=0.0,
+            broker_reconciliation_anomalies=2,
+            alerts=["broker_reconciliation_anomaly"],
+        )
+    )
+
+    actions = HealthAlertActionPolicy().evaluate(alerts)
+    action_types = [action.action_type for action in actions]
+
+    assert [alert.code for alert in alerts] == ["broker_reconciliation_anomaly"]
+    assert action_types == [
+        HealthAlertActionType.ENTER_SAFE_MODE,
+        HealthAlertActionType.BLOCK_EXECUTION,
+    ]
+    assert all(action.metadata["control_effect"]["broker_called"] is False for action in actions)
+    assert all(action.metadata["control_effect"]["live_orders_sent"] is False for action in actions)
 
 
 def test_alert_thresholds_reject_invalid_values():

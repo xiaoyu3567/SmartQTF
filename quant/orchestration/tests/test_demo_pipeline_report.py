@@ -1,4 +1,4 @@
-from scripts.test_full_pipeline_cli import run_pipeline
+from scripts.pipeline_demo import run_pipeline
 
 
 def test_demo_pipeline_reads_orchestrator_reports():

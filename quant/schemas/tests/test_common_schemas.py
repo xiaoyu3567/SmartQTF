@@ -402,7 +402,10 @@ def test_decision_intent_supports_bracket_targets_and_order_intent_mapping():
 
     payload = decision.to_payload()
     restored = DecisionIntent.from_payload(payload)
-    order_intent = decision.to_order_intent(client_order_id="client-close-short-001")
+    order_intent = decision.to_order_intent(
+        client_order_id="client-close-short-001",
+        risk_approved=True,
+    )
 
     assert payload["market_type"] == "perpetual"
     assert payload["stop_loss_targets"][0]["quantity_pct"] == 0.5
@@ -411,6 +414,27 @@ def test_decision_intent_supports_bracket_targets_and_order_intent_mapping():
     assert order_intent.side == TradeSide.BUY
     assert order_intent.reduce_only is True
     assert order_intent.limit_price == 64500.0
+
+
+def test_decision_intent_order_mapping_requires_explicit_risk_approval():
+    decision = DecisionIntent(
+        decision_id="decision-needs-risk-approval",
+        timestamp=1710000060,
+        symbol="BTCUSDT",
+        asset_class=AssetClass.CRYPTO,
+        strategy_id="ma_crossover",
+        strategy_version="1.0.0",
+        action=DecisionAction.OPEN_LONG,
+        order_type=OrderKind.MARKET,
+        quantity=0.02,
+    )
+
+    try:
+        decision.to_order_intent()
+    except ValueError as exc:
+        assert "without explicit risk approval" in str(exc)
+    else:
+        raise AssertionError("decision intent must not create executable orders before risk approval")
 
 
 def test_decision_intent_rejects_target_quantity_pct_over_allocation():

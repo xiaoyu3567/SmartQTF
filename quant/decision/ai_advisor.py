@@ -12,13 +12,105 @@ from quant.schemas import AIDecisionAdvisorRequest, AIDecisionSuggestion
 
 AI_DECISION_OUTPUT_SCHEMA: dict[str, Any] = {
     "name": "AIDecisionSuggestion",
-    "description": "Replayable SmartQTF AI decision advice. It is not an order, risk approval, or execution command.",
+    "description": (
+        "Replayable SmartQTF AI decision advice. It is not an order, risk approval, "
+        "portfolio allocation, or execution command. The candidate must be a complete "
+        "DecisionIntent object using the exact field names below."
+    ),
     "required_top_level_keys": [
         "suggestion_id",
         "timestamp",
         "candidate",
     ],
+    "required_candidate_keys": [
+        "decision_id",
+        "timestamp",
+        "symbol",
+        "asset_class",
+        "market_type",
+        "strategy_id",
+        "strategy_version",
+        "action",
+        "order_type",
+        "quantity",
+        "confidence",
+        "reason_codes",
+        "trace",
+    ],
+    "candidate_contract": {
+        "decision_id": "string, unique replayable decision id",
+        "timestamp": "integer unix timestamp copied from the request timestamp",
+        "symbol": "string copied exactly from request.symbol, e.g. BTCUSDT",
+        "asset_class": "one of: crypto, us_equity, china_a",
+        "market_type": "one of: spot, margin, perpetual, futures",
+        "strategy_id": "string identifying the advisory source, e.g. ai_decision_advisor",
+        "strategy_version": "string advisory strategy version, e.g. v1",
+        "regime": "optional string or null",
+        "action": "one of: open_long, close_long, open_short, close_short, hold",
+        "order_type": "one of: market, limit, stop. Use market for hold/no-trade advice.",
+        "quantity": "positive number. For hold/no-trade advice use a tiny advisory placeholder such as 0.000001.",
+        "limit_price": "number or null. Required only when order_type is limit.",
+        "stop_loss": "number or null",
+        "take_profit": "number or null",
+        "stop_loss_targets": "array, default []",
+        "take_profit_targets": "array, default []",
+        "time_in_force": "one of: gtc, ioc, fok. Default gtc.",
+        "reduce_only": "boolean, default false",
+        "confidence": "number between 0 and 1",
+        "reason_codes": "non-empty array of stable machine-readable strings, not prose",
+        "trace": {
+            "run_id": "copied exactly from request.trace.run_id",
+            "source": "copied exactly from request.trace.source",
+            "symbol": "copied exactly from request.symbol",
+            "timeframe": "copied exactly from request.timeframe",
+            "timestamp": "copied exactly from request.trace.timestamp",
+            "bar_index": "copied from request.trace.bar_index, or null",
+        },
+    },
+    "forbidden_candidate_keys": [
+        "type",
+        "decision",
+        "stance",
+        "rationale",
+        "conditions_to_reconsider",
+        "conditions_for_reconsideration",
+        "must_pass_later",
+    ],
     "forbidden_keys": sorted(DISALLOWED_AI_DIRECTIVE_KEYS),
+    "example": {
+        "suggestion_id": "ai-suggestion-BTCUSDT-1710000000",
+        "timestamp": 1710000000,
+        "candidate": {
+            "decision_id": "ai-decision-BTCUSDT-1710000000",
+            "timestamp": 1710000000,
+            "symbol": "BTCUSDT",
+            "asset_class": "crypto",
+            "market_type": "spot",
+            "strategy_id": "ai_decision_advisor",
+            "strategy_version": "v1",
+            "regime": "unknown",
+            "action": "hold",
+            "order_type": "market",
+            "quantity": 0.000001,
+            "limit_price": None,
+            "stop_loss": None,
+            "take_profit": None,
+            "stop_loss_targets": [],
+            "take_profit_targets": [],
+            "time_in_force": "gtc",
+            "reduce_only": False,
+            "confidence": 0.25,
+            "reason_codes": ["AI_INSUFFICIENT_CONTEXT", "AI_HOLD_ADVICE"],
+            "trace": {
+                "run_id": "paper-ai-001",
+                "source": "paper",
+                "symbol": "BTCUSDT",
+                "timeframe": "1m",
+                "timestamp": 1710000000,
+                "bar_index": None,
+            },
+        },
+    },
 }
 
 
@@ -46,7 +138,7 @@ class ChatCompletionsJSONClient:
     ):
         if not endpoint:
             raise ValueError("AI advisor endpoint must not be empty")
-        self.endpoint = endpoint
+        self.endpoint = normalize_openai_chat_completions_endpoint(endpoint)
         self.api_key = api_key
         self.timeout = timeout
         self.use_proxy = proxy_enabled() if use_proxy is None else use_proxy
@@ -145,10 +237,15 @@ class AIDecisionAdvisor:
                 "role": "system",
                 "content": (
                     "You are a read-only SmartQTF decision advisor. Return JSON only. "
-                    "The JSON must be an AIDecisionSuggestion containing a DecisionIntent candidate. "
-                    "Do not include risk approval, portfolio allocation, broker, order intent, "
-                    "client order id, or execution command fields. The candidate still must pass "
-                    "Risk, Portfolio, and Execution later."
+                    "The JSON must be an AIDecisionSuggestion containing a complete DecisionIntent candidate. "
+                    "Use exact SmartQTF field names: decision_id, timestamp, symbol, asset_class, "
+                    "market_type, strategy_id, strategy_version, action, order_type, quantity, "
+                    "confidence, reason_codes, and trace. Do not use natural-language wrapper fields "
+                    "such as type, decision, stance, rationale, conditions_to_reconsider, or must_pass_later. "
+                    "For no-trade advice use action='hold', order_type='market', and a tiny positive "
+                    "advisory placeholder quantity such as 0.000001. Do not include risk approval, "
+                    "portfolio allocation, broker, order intent, client order id, or execution command fields. "
+                    "The candidate still must pass Risk, Portfolio, and Execution later."
                 ),
             },
             {
@@ -235,6 +332,19 @@ class AIDecisionAdvisor:
             raise ValueError("AI suggestion trace symbol does not match advisor request")
         if advisor_request.timeframe is not None and trace.timeframe != advisor_request.timeframe:
             raise ValueError("AI suggestion trace timeframe does not match advisor request")
+
+
+def normalize_openai_chat_completions_endpoint(endpoint: str) -> str:
+    """Accept either a provider root URL or the full OpenAI-compatible chat completions URL."""
+
+    cleaned = endpoint.strip().rstrip("/")
+    if not cleaned:
+        raise ValueError("AI advisor endpoint must not be empty")
+    if cleaned.endswith("/chat/completions"):
+        return cleaned
+    if cleaned.endswith("/v1"):
+        return f"{cleaned}/chat/completions"
+    return f"{cleaned}/v1/chat/completions"
 
 
 def canonical_json(value: Any) -> str:

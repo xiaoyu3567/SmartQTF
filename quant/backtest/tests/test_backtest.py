@@ -6,10 +6,11 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from quant.account.models.crypto import CryptoAccount
-from quant.backtest.engine import BacktestCostModel, BacktestEngine
+from quant.backtest.engine import BacktestCostModel, BacktestEngine, BacktestExecutionModel
 from quant.data.schemas.market import Kline
 from quant.execution.engine import ExecutionEngine
 from quant.risk.risk_manager import RiskManager
+from quant.schemas import OrderLifecycleContract
 from quant.strategy.ma_crossover import MACrossoverStrategy
 
 
@@ -225,6 +226,69 @@ def test_backtest_latency_executes_signal_on_future_bar():
     assert result["slippage_reports"][0]["execute_index"] == 2
     assert result["slippage_reports"][0]["latency_ms"] == 1
     assert result["slippage_reports"][0]["reference_price"] == 110.0
+
+
+def test_backtest_execution_model_partial_fill_uses_state_machine_contract():
+    data = build_klines([100, 101, 102])
+    account = CryptoAccount(initial_balance=10000.0)
+    execution = ExecutionEngine(execution_delay=0, seed=1, account=account)
+    strategy = CloseThresholdStrategy()
+    risk = RiskManager(max_position_pct=0.1, symbol="BTCUSDT")
+    engine = BacktestEngine(
+        strategy,
+        execution,
+        account,
+        risk=risk,
+        feature_pipeline=lambda klines: {"close": [kline.close for kline in klines]},
+        execution_model=BacktestExecutionModel(partial_fill_ratio=0.4),
+    )
+
+    result = engine.run(data)
+
+    fill = result["fills"][0]
+    contract = OrderLifecycleContract.from_payload(fill["order_lifecycle"])
+    assert fill["status"] == "partial"
+    assert fill["remaining_qty"] > 0.0
+    assert fill["order_lifecycle_contract"] == "order_lifecycle_v1"
+    assert contract.lifecycle_state == "PARTIALLY_FILLED"
+    assert contract.filled_qty == fill["filled_qty"]
+    assert abs(contract.requested_qty - (fill["filled_qty"] + fill["remaining_qty"])) < 1e-9
+    assert contract.transition_audit[-1]["event"] == "order_partially_filled"
+    assert result["execution_simulation_reports"][0]["event"] == "partial"
+    assert result["execution_simulation_reports"][0]["duplicate_order_guard_active"] is True
+
+
+def test_backtest_execution_model_timeout_recovers_without_duplicate_submit():
+    data = build_klines([100, 101, 102, 103])
+    account = CryptoAccount(initial_balance=10000.0)
+    execution = ExecutionEngine(execution_delay=0, seed=1, account=account)
+    strategy = CloseThresholdStrategy()
+    risk = RiskManager(max_position_pct=0.1, symbol="BTCUSDT")
+    engine = BacktestEngine(
+        strategy,
+        execution,
+        account,
+        risk=risk,
+        feature_pipeline=lambda klines: {"close": [kline.close for kline in klines]},
+        execution_model=BacktestExecutionModel(timeout_recovery_bars=1),
+    )
+
+    result = engine.run(data)
+
+    fill = result["fills"][0]
+    fill_contract = OrderLifecycleContract.from_payload(fill["order_lifecycle"])
+    reports = result["execution_simulation_reports"]
+    assert [report["event"] for report in reports] == ["timeout", "recovery_fill"]
+    assert reports[0]["status"] == "unknown"
+    assert reports[0]["broker_place_called"] is False
+    assert reports[1]["broker_place_called"] is False
+    assert reports[1]["duplicate_order_guard_active"] is True
+    assert fill["fill_index"] == 2
+    assert fill["recovered_from_timeout"] is True
+    audit_events = [record["event"] for record in fill_contract.transition_audit]
+    assert "order_timeout" in audit_events
+    assert "recovery_started" in audit_events
+    assert audit_events[-1] == "order_filled"
 
 
 def test_backtest_rejects_bad_quality_data_before_trading():

@@ -8,6 +8,7 @@ else:
     ConfigDict = None
 
 from quant.schemas.enums import LayerName, PayloadSource
+from quant.utils.time_format import add_display_times
 
 
 ModelT = TypeVar("ModelT", bound="SmartQTFModel")
@@ -23,6 +24,9 @@ class SmartQTFModel(BaseModel):
         if hasattr(self, "model_dump"):
             return self.model_dump(mode="json")
         return self.dict()
+
+    def to_display_payload(self) -> Dict[str, Any]:
+        return add_display_times(self.to_payload())
 
     @classmethod
     def from_payload(cls: Type[ModelT], payload: Dict[str, Any]) -> ModelT:

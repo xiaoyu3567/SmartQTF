@@ -19,6 +19,8 @@ from quant.schemas import (
     OrderLogRecord,
     OrderStatus,
     PayloadSource,
+    RiskDecision,
+    RiskDecisionLogRecord,
     TimeInForce,
     TraceContext,
     TradeSide,
@@ -109,6 +111,40 @@ def make_rejected_order(order_id, decision_id, symbol, metadata=None):
         remaining_quantity=1.0,
         decision_id=decision_id,
         metadata=metadata or {},
+    )
+
+
+def make_order(order_id, decision_id, symbol, status, metadata=None):
+    return OrderLogRecord(
+        event_id=f"event-{order_id}",
+        run_id="paper-review-001",
+        timestamp=1710000120,
+        trace=make_trace(symbol=symbol),
+        order_id=order_id,
+        client_order_id=f"client-{order_id}",
+        symbol=symbol,
+        side=TradeSide.BUY,
+        status=status,
+        quantity=1.0,
+        remaining_quantity=1.0,
+        decision_id=decision_id,
+        metadata=metadata or {},
+    )
+
+
+def make_rejected_risk_record(decision, reason_codes):
+    risk_decision = RiskDecision.reject(reason_codes[0], "risk rejected")
+    return RiskDecisionLogRecord(
+        event_id=f"event-risk-{decision.decision_id}",
+        run_id=decision.trace.run_id,
+        timestamp=decision.timestamp,
+        trace=decision.trace,
+        symbol=decision.symbol,
+        approved=False,
+        reason_codes=reason_codes,
+        risk_decision=risk_decision,
+        strategy_id=decision.strategy_id,
+        decision_id=decision.decision_id,
     )
 
 
@@ -250,9 +286,58 @@ def test_daily_review_adds_feature_buckets_and_risk_statistics():
     assert "按特征分桶" in report.summary_text
 
 
+def test_daily_review_answers_strategy_regime_reason_risk_and_order_failure_questions():
+    losing_decision = make_decision(
+        "decision-lose-001",
+        strategy_id="breakout",
+        regime="volatile",
+        reason_codes=["breakout_failed"],
+    )
+    rejected_decision = make_decision(
+        "decision-risk-001",
+        strategy_id="mean_reversion",
+        regime="range",
+        reason_codes=["zscore_revert"],
+    )
+    failed_order_decision = make_decision(
+        "decision-order-001",
+        strategy_id="breakout",
+        regime="trend",
+        reason_codes=["entry_timeout"],
+        symbol="ETHUSDT",
+    )
+    records = [
+        make_decision_record_with_features(losing_decision, {"atr_pct": 0.04}),
+        make_decision_record(rejected_decision),
+        make_decision_record(failed_order_decision),
+        make_fill("fill-lose-001", "decision-lose-001", "BTCUSDT", net_pnl=-7.0, fee=0.1),
+        make_rejected_risk_record(rejected_decision, ["risk:max_position"]),
+        make_order(
+            "order-timeout-001",
+            "decision-order-001",
+            "ETHUSDT",
+            OrderStatus.UNKNOWN,
+            metadata={"order_failure_reason_codes": ["broker_timeout"], "error": "timeout"},
+        ),
+    ]
+
+    report = DailyReviewReporter().build_report(records, report_id="daily-004")
+
+    assert bucket(report, "strategy", "breakout").net_pnl == -7.0
+    assert bucket(report, "regime", "volatile").losing_trades == 1
+    assert bucket(report, "feature", "atr_pct:positive").net_pnl == -7.0
+    assert bucket(report, "decision_reason", "breakout_failed").losing_trades == 1
+    assert bucket(report, "risk_rejection_reason", "risk:max_position").risk_rejection_count == 1
+    assert bucket(report, "order_failure", "broker_timeout").order_failure_count == 1
+    assert report.risk_rejection_count == 1
+    assert report.order_failure_count == 1
+    assert "按风控拒绝原因" in report.summary_text
+    assert "按订单失败" in report.summary_text
+
+
 def test_daily_review_bucket_rejects_negative_counts():
     try:
-        DailyReviewBucket(bucket_type="symbol", bucket_value="BTCUSDT", rejection_count=-1)
+        DailyReviewBucket(bucket_type="symbol", bucket_value="BTCUSDT", order_failure_count=-1)
     except ValidationError:
         pass
     else:

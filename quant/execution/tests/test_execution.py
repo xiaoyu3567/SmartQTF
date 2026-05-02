@@ -316,3 +316,109 @@ def test_execution_state_machine_rejects_invalid_transition():
         assert "invalid execution transition" in str(exc)
     else:
         raise AssertionError("expected invalid transition to raise ValueError")
+
+
+def test_order_lifecycle_partial_fill_then_full_fill_is_auditable():
+    machine = ExecutionStateMachine(state=ExecutionState.CREATED)
+
+    machine.apply_event(
+        ExecutionEvent.ORDER_VALIDATED,
+        client_order_id="client-1",
+        reason="risk_and_portfolio_approved",
+    )
+    machine.apply_event(
+        ExecutionEvent.ORDER_SUBMITTING,
+        client_order_id="client-1",
+        broker_order_id="broker-1",
+    )
+    machine.apply_event(
+        ExecutionEvent.ORDER_SUBMITTED,
+        client_order_id="client-1",
+        broker_order_id="broker-1",
+    )
+    machine.apply_event(
+        ExecutionEvent.ORDER_PARTIALLY_FILLED,
+        client_order_id="client-1",
+        broker_order_id="broker-1",
+        metadata={"filled_qty": 0.4, "remaining_qty": 0.6},
+    )
+    machine.apply_event(
+        ExecutionEvent.ORDER_FILLED,
+        client_order_id="client-1",
+        broker_order_id="broker-1",
+        metadata={"filled_qty": 1.0, "remaining_qty": 0.0},
+    )
+
+    assert machine.state == ExecutionState.FILLED
+    assert machine.history == [
+        ExecutionState.CREATED,
+        ExecutionState.VALIDATED,
+        ExecutionState.SUBMITTING,
+        ExecutionState.SUBMITTED,
+        ExecutionState.PARTIALLY_FILLED,
+        ExecutionState.FILLED,
+    ]
+    assert machine.broker_submit_intent_count("client-1") == 1
+    assert machine.audit_trail[-1].metadata == {"filled_qty": 1.0, "remaining_qty": 0.0}
+
+    replayed = ExecutionStateMachine.replay(
+        machine.to_audit_log(),
+        initial_state=ExecutionState.CREATED,
+    )
+    assert replayed.state == ExecutionState.FILLED
+    assert replayed.history == machine.history
+    assert replayed.to_audit_log() == machine.to_audit_log()
+
+
+def test_order_lifecycle_timeout_retry_does_not_switch_client_order_id():
+    machine = ExecutionStateMachine(state=ExecutionState.CREATED)
+
+    machine.apply_event(ExecutionEvent.ORDER_VALIDATED, client_order_id="client-1")
+    machine.apply_event(ExecutionEvent.ORDER_SUBMITTING, client_order_id="client-1")
+    machine.apply_event(
+        ExecutionEvent.ORDER_TIMEOUT,
+        client_order_id="client-1",
+        reason="submit_request_timed_out",
+    )
+    machine.apply_event(
+        ExecutionEvent.RETRY_STARTED,
+        client_order_id="client-1",
+        reason="retry_budget_available",
+    )
+
+    try:
+        machine.apply_event(
+            ExecutionEvent.ORDER_SUBMITTED,
+            client_order_id="client-2",
+            reason="would_duplicate_order",
+        )
+    except ValueError as exc:
+        assert "client_order_id mismatch" in str(exc)
+    else:
+        raise AssertionError("expected client_order_id mismatch to raise ValueError")
+
+    machine.apply_event(
+        ExecutionEvent.ORDER_SUBMITTED,
+        client_order_id="client-1",
+        reason="broker_confirms_same_client_order_id",
+    )
+
+    assert machine.state == ExecutionState.SUBMITTED
+    assert machine.active_client_order_id == "client-1"
+    assert machine.broker_submit_intent_count("client-1") == 1
+    assert {record.client_order_id for record in machine.audit_trail} == {"client-1"}
+
+
+def test_order_lifecycle_rejects_illegal_fill_before_submit():
+    machine = ExecutionStateMachine(state=ExecutionState.CREATED)
+
+    try:
+        machine.transition(
+            ExecutionEvent.ORDER_FILLED,
+            ExecutionState.FILLED,
+            client_order_id="client-1",
+        )
+    except ValueError as exc:
+        assert "invalid execution transition" in str(exc)
+    else:
+        raise AssertionError("expected invalid lifecycle transition to raise ValueError")

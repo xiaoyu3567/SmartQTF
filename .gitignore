@@ -25,3 +25,4 @@ build/
 docs/
 logs/
 chatgpt-*.html
+.superpowers/

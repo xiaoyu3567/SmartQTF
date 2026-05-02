@@ -11,16 +11,35 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from quant.qa.layer_contracts import check_layer_contracts
+from quant.security import discover_artifact_paths, scan_artifact_paths, scan_payload
 
 HARNESS_DIR = PROJECT_ROOT / "docs" / "harness"
 WEB_DIR = HARNESS_DIR / "web"
 TASK_SYSTEM = HARNESS_DIR / "task-system.md"
+TASK_ARCHIVE_DIR = HARNESS_DIR / "archive"
+WORKFLOW_TEST_TODOLIST = HARNESS_DIR / "workflow-test-todolist.md"
+WORKFLOW_TEST_TODOLIST_ARCHIVE = TASK_ARCHIVE_DIR / "workflow-test-todolist-archived.md"
+WORKFLOW_REVIEW_HTML = WEB_DIR / "workflow-test-review.html"
+WORKFLOW_REVIEW_CASES = WEB_DIR / "workflow-test-review-cases.json"
+LAYER_TUTOR_HTML = WEB_DIR / "layer-interaction-tutor.html"
+LAYER_TUTOR_CASES = WEB_DIR / "layer-interaction-cases.json"
+LAYER_TUTOR_JS = WEB_DIR / "layer-interaction-tutor.js"
+LAYER_TUTOR_SECTION = "## 4.1 Layer Interaction Tutor 覆盖映射"
 CURRENT_STATE = HARNESS_DIR / "current-state.md"
 MILESTONES = HARNESS_DIR / "milestones.md"
 LOG_DIR = PROJECT_ROOT / "logs" / "harness-heartbeat"
 REHEARSAL_DIR = PROJECT_ROOT / "logs" / "production-rehearsals"
+PIPELINE_RUN_DIR = PROJECT_ROOT / "logs" / "pipeline-runs"
+LIVE_PIPELINE_RUN_DIR = PROJECT_ROOT / "logs" / "live" / "pipeline-runs"
+FAULT_DRILL_DIR = PROJECT_ROOT / "logs" / "fault-drills"
+RECONCILIATION_DIR = PROJECT_ROOT / "logs" / "reconciliation"
+ALERT_ACTION_LOG_CANDIDATES = [
+    PROJECT_ROOT / "logs" / "monitoring" / "alert-actions.jsonl",
+    PROJECT_ROOT / "logs" / "alert-actions.jsonl",
+]
 OUTPUT = WEB_DIR / "harness-status.json"
 CHATGPT_EXPORT = PROJECT_ROOT / "chatgpt-1777297245583.html"
+SECRET_SCAN_MAX_FILES = 500
 
 
 EXPECTED_DIRECTORIES = [
@@ -196,11 +215,11 @@ PROJECT_CAPABILITIES = [
     {
         "group": "数据输入",
         "key": "market_microstructure",
-        "capability": "实时成交、订单簿和净流入输入",
-        "mapping": "OKXDataProvider -> OrderFlowSnapshot / OrderBookSnapshot / NetflowSnapshot",
-        "paths": ["quant/data/providers/okx_provider.py", "quant/features/indicators/orderflow.py", "quant/schemas/feature.py"],
-        "task_ids": ["H-DATA-008"],
-        "gap": "OKX public provider 已接入真实成交、订单簿和成交派生 netflow；后续如需更高实时性，可继续接 WebSocket 增量流或外部资金流数据源。",
+        "capability": "实时成交、订单簿、净流入和长窗口成交回放",
+        "mapping": "OKXDataProvider -> public trades/history-trades -> TradeStore -> OrderFlowSnapshot / OrderBookSnapshot / NetflowSnapshot",
+        "paths": ["quant/data/providers/okx_provider.py", "adapters/exchange/okx.py", "quant/data/storage.py", "quant/features/indicators/orderflow.py", "quant/schemas/feature.py"],
+        "task_ids": ["H-DATA-007", "H-DATA-008", "DATA-AUDIT-001", "DATA-AUDIT-002"],
+        "gap": "H-DATA-007/H-DATA-008 已完成 OKX public history pagination、本地 TradeStore 和 incremental sync；DATA-AUDIT-001/002 已补齐 OKXDataProvider 可选本地优先路径与 raw trade fallback 去重一致性。后续可选增强为 SQLite/Parquet 级高性能长期 trade store。",
     },
     {
         "group": "账户组合",
@@ -297,92 +316,12 @@ PROJECT_CAPABILITIES = [
 
 PROJECT_GAP_TASKS = [
     {
-        "ID": "H-ORCH-006",
-        "layer": "运行闭环",
-        "status": "DONE",
+        "ID": "H-OPT-005",
+        "layer": "策略验证产物",
+        "status": "BLOCKED",
         "priority": "P1",
-        "gap": "已补配置驱动 10 分钟扫描入口，可合并候选币和持仓币并落盘 BatchRunReport。",
-        "suggestion": "下一步继续完善具体交易所账户解析，并在真实部署环境验收扫描输入。",
-    },
-    {
-        "ID": "H-ORCH-007",
-        "layer": "运行闭环",
-        "status": "DONE",
-        "priority": "P1",
-        "gap": "已补 Universe Snapshot 扫描注入；显式开启后可把 provider 发现的 universe symbol 合并进扫描请求，并写入可回放批次元数据。",
-        "suggestion": "下一步在真实部署环境用 OKX public provider 做只读验收，不纳入默认全量 pytest。",
-    },
-    {
-        "ID": "H-DATA-007",
-        "layer": "数据输入",
-        "status": "DONE",
-        "priority": "P1",
-        "gap": "已补交易所可交易 symbol universe 的发现、过滤和排序。",
-        "suggestion": "下一步验证真实交易所返回的 Universe Snapshot 是否满足生产筛选阈值。",
-    },
-    {
-        "ID": "H-DATA-008",
-        "layer": "数据输入",
-        "status": "DONE",
-        "priority": "P1",
-        "gap": "已补 OKX public trades/orderbook 和成交派生 netflow provider 输入。",
-        "suggestion": "下一步只在需要更高实时性时接 WebSocket 增量订单簿或外部资金流数据源。",
-    },
-    {
-        "ID": "H-ACCT-001",
-        "layer": "账户组合",
-        "status": "DONE",
-        "priority": "P1",
-        "gap": "已补账户余额、权益、持仓和持仓币同步契约，并可同步本地账户、组合持仓快照和扫描列表。",
-        "suggestion": "下一步接具体 OKX/Binance 账户响应解析，并在真实凭据环境中做只读验收。",
-    },
-    {
-        "ID": "H-DECISION-003",
-        "layer": "决策",
-        "status": "DONE",
-        "priority": "P2",
-        "gap": "已补 AI 决策建议沙箱和 advisor 入口，可安全接收多空、止盈止损、confidence 和 reason code 建议。",
-        "suggestion": "下一步在真实部署环境用显式代理、endpoint 和凭据验收 AI provider 调用，输出仍继续经过 Risk/Portfolio/Execution。",
-    },
-    {
-        "ID": "H-RISK-006",
-        "layer": "风控执行",
-        "status": "DONE",
-        "priority": "P1",
-        "gap": "已补 typed ProtectiveExitPlan 和纸交易执行层保护性退出触发/回放。",
-        "suggestion": "后续进入真实 live 前，继续接交易所原生止盈止损/OCO，并纳入实盘权限闸验收。",
-    },
-    {
-        "ID": "H-EXEC-020",
-        "layer": "风控执行",
-        "status": "DONE",
-        "priority": "P1",
-        "gap": "已补真实 live 下单前的强制权限闸。",
-        "suggestion": "继续把真实启用流程约束在人工 preflight/生产演练产物、显式 allow_live_orders=true 和 Kill Switch 健康三者全部满足之后。",
-    },
-    {
-        "ID": "H-LOG-003",
-        "layer": "记录复盘",
-        "status": "DONE",
-        "priority": "P1",
-        "gap": "已补 PipelineRunReport 和 PipelineBatchRunReport 按配置稳定落盘。",
-        "suggestion": "下一步让生产演练、Dashboard 和人工验收流程优先读取 latest-run/latest-batch 指针。",
-    },
-    {
-        "ID": "H-OPT-004",
-        "layer": "学习优化",
-        "status": "DONE",
-        "priority": "P1",
-        "gap": "已新增日报到优化候选队列的衔接。",
-        "suggestion": "下一步接入生产环境真实 OOS/walk-forward/Monte Carlo 验证产物，避免只依赖日报派生指标。",
-    },
-    {
-        "ID": "H-QA-007",
-        "layer": "验证",
-        "status": "DONE",
-        "priority": "P2",
-        "gap": "已补层级关系静态校验，当前会扫描生产源码中的反向 import、策略 Broker 依赖、Risk 下单调用和 Execution Alpha 依赖。",
-        "suggestion": "后续新增层级或外部 adapter 时，同步扩展 `DEFAULT_LAYER_CONTRACT_RULES` 并保持 Dashboard 违规数为 0。",
+        "gap": "真实 OOS / walk-forward / Monte Carlo 验证产物尚未提供，优化候选不能推进生命周期。",
+        "suggestion": "生产环境提供真实验证 JSON 产物后，运行 scripts/validate_strategy_validation_artifacts.py 并确认 latest 报告 artifact_count > 0。",
     },
 ]
 
@@ -424,11 +363,247 @@ def parse_markdown_table(path, expected_first_column):
     return rows
 
 
-def parse_tasks():
-    tasks = parse_markdown_table(TASK_SYSTEM, "ID")
+def parse_tasks_from(path):
+    tasks = parse_markdown_table(path, "ID")
     for task in tasks:
         task["area"] = task["ID"].split("-")[1] if "-" in task["ID"] else "OTHER"
     return tasks
+
+
+def parse_all_task_tables_from(path):
+    tasks = []
+    headers = None
+    in_table = False
+    for line in path.read_text(encoding="utf-8").splitlines():
+        stripped = line.strip()
+        if not stripped.startswith("|"):
+            in_table = False
+            headers = None
+            continue
+        cells = [strip_markdown(cell) for cell in stripped.strip("|").split("|")]
+        if not cells:
+            continue
+        if cells[0] == "ID":
+            headers = cells
+            in_table = True
+            continue
+        if in_table and set(cells[0]) <= {"-", ":"}:
+            continue
+        if in_table and headers and len(cells) == len(headers):
+            task = dict(zip(headers, cells))
+            if task.get("ID", "").startswith("H-"):
+                task["area"] = task["ID"].split("-")[1] if "-" in task["ID"] else "OTHER"
+                tasks.append(task)
+    return tasks
+
+
+def parse_tasks():
+    return parse_tasks_from(TASK_SYSTEM)
+
+
+def parse_archived_tasks():
+    if not TASK_ARCHIVE_DIR.exists():
+        return []
+    tasks = []
+    archive_paths = sorted(TASK_ARCHIVE_DIR.glob("task-system-*.md"))
+    completed_tasks = TASK_ARCHIVE_DIR / "completed-tasks.md"
+    if completed_tasks.exists():
+        archive_paths.append(completed_tasks)
+    for path in archive_paths:
+        parser = parse_all_task_tables_from if path.name == "completed-tasks.md" else parse_tasks_from
+        for task in parser(path):
+            task["archive_path"] = str(path.relative_to(PROJECT_ROOT))
+            tasks.append(task)
+    return tasks
+
+
+def related_tasks(tasks, task_ids):
+    task_by_id = {task.get("ID"): task for task in tasks if task.get("ID") in task_ids}
+    missing_ids = set(task_ids) - set(task_by_id)
+    if missing_ids:
+        for task in parse_archived_tasks():
+            task_id = task.get("ID")
+            if task_id in missing_ids and task_id not in task_by_id:
+                task_by_id[task_id] = task
+    return [task_by_id[task_id] for task_id in task_ids if task_id in task_by_id]
+
+
+def workflow_test_plan_summary(tasks, archived_tasks=None):
+    archived_tasks = archived_tasks or []
+    all_tasks = list(tasks) + list(archived_tasks)
+    workflow_tasks = []
+    for task in all_tasks:
+        task_id = task.get("ID", "")
+        if not task_id.startswith("H-QA-"):
+            continue
+        try:
+            number = int(task_id.split("-")[-1])
+        except ValueError:
+            continue
+        if 9 <= number <= 16:
+            workflow_tasks.append(task)
+    status_counts = {}
+    for task in workflow_tasks:
+        status = task.get("状态", "TODO")
+        status_counts[status] = status_counts.get(status, 0) + 1
+    checklist_count = 0
+    workflow_todolist_path = WORKFLOW_TEST_TODOLIST if WORKFLOW_TEST_TODOLIST.exists() else WORKFLOW_TEST_TODOLIST_ARCHIVE
+    if workflow_todolist_path.exists():
+        checklist_count = workflow_todolist_path.read_text(encoding="utf-8").count("- [ ]")
+    task_system_text = TASK_SYSTEM.read_text(encoding="utf-8") if TASK_SYSTEM.exists() else ""
+    mapped_review_task_ids = [task_id for task_id in ["H-MON-013", "H-QA-020", "H-QA-021", "H-MON-014", "H-MON-015", "H-QA-022", "H-MON-016"] if task_id in task_system_text]
+    return {
+        "path": str(workflow_todolist_path.relative_to(PROJECT_ROOT)),
+        "exists": workflow_todolist_path.exists(),
+        "checklist_items": checklist_count,
+        "coverage_mapping": {
+            "path": str(TASK_SYSTEM.relative_to(PROJECT_ROOT)),
+            "section": LAYER_TUTOR_SECTION,
+            "exists": LAYER_TUTOR_SECTION in task_system_text,
+            "mapped_task_ids": mapped_review_task_ids,
+            "done_constraints_present": "### 4.1.1 全局 DONE 约束" in task_system_text,
+            "review_rule_present": "### 4.1.3 完成度审查规则" in task_system_text,
+            "source_test_tasks_archived": [f"H-QA-{number:03d}" for number in range(9, 17)],
+        },
+        "task_count": len(workflow_tasks),
+        "by_status": status_counts,
+        "tasks": [
+            {
+                "ID": task.get("ID"),
+                "状态": task.get("状态"),
+                "优先级": task.get("优先级"),
+                "任务": task.get("任务"),
+                "archive_path": task.get("archive_path"),
+            }
+            for task in workflow_tasks
+        ],
+    }
+
+
+def workflow_test_review_console_summary(tasks):
+    case_payload = {}
+    case_count = 0
+    editable_case_count = 0
+    simulators = []
+    safety = {
+        "static_page": True,
+        "network_required": False,
+        "real_credentials_required": False,
+        "live_orders_allowed": False,
+        "local_python_runner_enabled_by_default": False,
+    }
+    if WORKFLOW_REVIEW_CASES.exists():
+        try:
+            case_payload = json.loads(WORKFLOW_REVIEW_CASES.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            case_payload = {}
+        cases = case_payload.get("cases") if isinstance(case_payload, dict) else []
+        if isinstance(cases, list):
+            case_count = len(cases)
+            editable_case_count = sum(1 for case in cases if case.get("editable"))
+            simulators = sorted({case.get("simulator") for case in cases if case.get("simulator")})
+            payload_safety = case_payload.get("safety") if isinstance(case_payload, dict) else None
+            if isinstance(payload_safety, dict):
+                safety.update(payload_safety)
+    review_task_ids = ["H-QA-017", "H-MON-011", "H-QA-018", "H-QA-019", "H-MON-012"]
+    review_tasks = related_tasks(tasks, review_task_ids)
+    return {
+        "page": str(WORKFLOW_REVIEW_HTML.relative_to(PROJECT_ROOT)),
+        "cases": str(WORKFLOW_REVIEW_CASES.relative_to(PROJECT_ROOT)),
+        "page_exists": WORKFLOW_REVIEW_HTML.exists(),
+        "cases_exists": WORKFLOW_REVIEW_CASES.exists(),
+        "case_count": case_count,
+        "editable_case_count": editable_case_count,
+        "simulators": simulators,
+        "safety": safety,
+        "tasks": [
+            {
+                "ID": task.get("ID"),
+                "状态": task.get("状态"),
+                "优先级": task.get("优先级"),
+                "任务": task.get("任务"),
+                "archive_path": task.get("archive_path"),
+            }
+            for task in review_tasks
+        ],
+    }
+
+
+def layer_tutor_simulator_edges():
+    if not LAYER_TUTOR_JS.exists():
+        return []
+    text = LAYER_TUTOR_JS.read_text(encoding="utf-8")
+    match = re.search(r"const SIMULATOR_EDGE_KEYS = \[(.*?)\];", text, re.DOTALL)
+    if not match:
+        return []
+    return re.findall(r'"([^"]+->[^"]+)"', match.group(1))
+
+
+def layer_interaction_tutor_summary(tasks):
+    payload = {}
+    step_count = 0
+    editable_step_count = 0
+    simulator_count = 0
+    teacher_panel_count = 0
+    field_explanation_count = 0
+    safety = {
+        "static_page": True,
+        "network_required": False,
+        "real_credentials_required": False,
+        "live_orders_allowed": False,
+        "python_runner_enabled_by_default": False,
+    }
+    if LAYER_TUTOR_CASES.exists():
+        try:
+            payload = json.loads(LAYER_TUTOR_CASES.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            payload = {}
+        steps = payload.get("steps") if isinstance(payload, dict) else []
+        if isinstance(steps, list):
+            step_count = len(steps)
+            editable_step_count = sum(1 for step in steps if step.get("editable_fields"))
+            simulator_count = len({step.get("simulator") for step in steps if step.get("simulator")})
+            teacher_panel_count = sum(1 for step in steps if step.get("teacher_explanation"))
+            field_explanation_count = sum(len(step.get("field_explanations") or {}) for step in steps)
+            payload_safety = payload.get("safety") if isinstance(payload, dict) else None
+            if isinstance(payload_safety, dict):
+                safety.update(payload_safety)
+    simulator_edges = layer_tutor_simulator_edges()
+    tutor_task_ids = ["H-MON-013", "H-QA-020", "H-QA-021", "H-MON-014", "H-MON-015", "H-QA-022", "H-MON-016"]
+    tutor_tasks = related_tasks(tasks, tutor_task_ids)
+    return {
+        "page": str(LAYER_TUTOR_HTML.relative_to(PROJECT_ROOT)),
+        "cases": str(LAYER_TUTOR_CASES.relative_to(PROJECT_ROOT)),
+        "page_exists": LAYER_TUTOR_HTML.exists(),
+        "cases_exists": LAYER_TUTOR_CASES.exists(),
+        "step_count": step_count,
+        "editable_step_count": editable_step_count,
+        "simulator_count": simulator_count,
+        "simulator_coverage_count": len(simulator_edges),
+        "simulator_edges": simulator_edges,
+        "teacher_panel_count": teacher_panel_count,
+        "field_explanation_count": field_explanation_count,
+        "safety": safety,
+        "tasks": [
+            {
+                "ID": task.get("ID"),
+                "状态": task.get("状态"),
+                "优先级": task.get("优先级"),
+                "任务": task.get("任务"),
+                "archive_path": task.get("archive_path"),
+            }
+            for task in tutor_tasks
+        ],
+    }
+
+
+def archived_task_summary(archived_tasks):
+    summary = summarize_tasks(archived_tasks)
+    archives = sorted({task.get("archive_path") for task in archived_tasks if task.get("archive_path")})
+    return {
+        **summary,
+        "archives": archives,
+    }
 
 
 def parse_layers():
@@ -648,7 +823,8 @@ def capability_matrix(tasks):
 
 
 def gap_tasks(tasks):
-    task_by_id = {task.get("ID"): task for task in tasks}
+    archived_task_by_id = {task.get("ID"): task for task in parse_archived_tasks()}
+    task_by_id = {**archived_task_by_id, **{task.get("ID"): task for task in tasks}}
     result = []
     for item in PROJECT_GAP_TASKS:
         task = task_by_id.get(item["ID"], {})
@@ -694,14 +870,7 @@ def chatgpt_export_summary():
 def summarize_project_progress(tasks, layers, directory, flow, capabilities, gaps):
     total_tasks = len(tasks)
     done_tasks = sum(1 for task in tasks if task.get("状态") == "DONE")
-    active_tasks = [
-        task
-        for task in tasks
-        if not (
-            task.get("状态") == "BLOCKED"
-            and "取代" in task.get("完成标准", "")
-        )
-    ]
+    active_tasks = list(tasks)
     active_done = sum(1 for task in active_tasks if task.get("状态") == "DONE")
     active_open = [task for task in active_tasks if task.get("状态") != "DONE"]
     task_completion = round((done_tasks / total_tasks) * 100, 1) if total_tasks else 0.0
@@ -743,9 +912,9 @@ def summarize_project_progress(tasks, layers, directory, flow, capabilities, gap
         "active_open_tasks": len(active_open),
         "gap_tasks": len(open_gaps),
         "notes": [
-            "任务完成度和结构成熟度分开计算，避免历史任务 DONE 掩盖层级缺口。",
-            "H-DATA-005 属于被 H-DATA-006 取代的历史 BLOCKED，不计入 active open。",
-            "当前缺口只保留与 SmartQTF 交易闭环直接相关的能力，不再追踪通用任务系统。",
+            "当前任务板已归档 DONE 和历史替代阻塞项，只保留当前阻塞任务与 Workflow 测试任务。",
+            "历史任务证据见 docs/harness/archive/task-system-completed-2026-04-29.md。",
+            "任务完成度表示当前任务板推进度；归档任务单独通过 archived_task_summary 展示。",
         ],
     }
 
@@ -952,9 +1121,474 @@ def rehearsal_next_actions(failures, dry_run_summary):
     return actions
 
 
+def _read_json_payload(path):
+    if not path.exists():
+        return None
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+
+
+def _latest_json_payload(directory, preferred_names=None):
+    preferred_names = preferred_names or ("latest.json", "latest-run.json")
+    candidates = [directory / name for name in preferred_names]
+    if directory.exists():
+        candidates.extend(
+            sorted(
+                (path for path in directory.glob("*.json") if path.name not in preferred_names),
+                key=lambda path: path.stat().st_mtime,
+                reverse=True,
+            )
+        )
+    seen = set()
+    for path in candidates:
+        key = str(path)
+        if key in seen:
+            continue
+        seen.add(key)
+        payload = _read_json_payload(path)
+        if payload is not None:
+            return path, payload
+    return None, None
+
+
+def _extract_named_payloads(value, key):
+    matches = []
+    if isinstance(value, dict):
+        item = value.get(key)
+        if isinstance(item, dict):
+            matches.append(item)
+        for child in value.values():
+            matches.extend(_extract_named_payloads(child, key))
+    elif isinstance(value, list):
+        for child in value:
+            matches.extend(_extract_named_payloads(child, key))
+    return matches
+
+
+def _pipeline_report_payloads():
+    reports = []
+    for path in [PIPELINE_RUN_DIR / "latest-run.json", LIVE_PIPELINE_RUN_DIR / "latest-run.json"]:
+        payload = _read_json_payload(path)
+        if payload is None:
+            continue
+        reports.append(
+            {
+                "path": path,
+                "payload": payload,
+            }
+        )
+    return reports
+
+
+def _order_lifecycle_dashboard_summary(reports):
+    orders = []
+    seen_order_keys = set()
+    for report in reports:
+        payload = report["payload"]
+        source_path = _project_relative_or_absolute(report["path"])
+        execution_results = _extract_named_payloads(payload, "execution_result")
+        for execution_result in execution_results:
+            lifecycle = execution_result.get("order_lifecycle") or {}
+            safety_flags = execution_result.get("safety_flags") or lifecycle.get("safety_flags") or {}
+            lifecycle_state = (
+                lifecycle.get("lifecycle_state")
+                or execution_result.get("lifecycle_state")
+                or execution_result.get("status")
+                or "UNKNOWN"
+            )
+            order_status = execution_result.get("status") or lifecycle.get("order_status") or lifecycle_state
+            client_order_id = execution_result.get("client_order_id") or lifecycle.get("client_order_id")
+            order_key = (source_path, client_order_id, lifecycle_state, order_status)
+            if order_key in seen_order_keys:
+                continue
+            seen_order_keys.add(order_key)
+            orders.append(
+                {
+                    "source_path": source_path,
+                    "run_id": (payload.get("context") or {}).get("run_id"),
+                    "client_order_id": client_order_id,
+                    "symbol": execution_result.get("symbol") or lifecycle.get("symbol"),
+                    "side": execution_result.get("side") or lifecycle.get("side"),
+                    "status": order_status,
+                    "lifecycle_state": lifecycle_state,
+                    "lifecycle_path": lifecycle.get("lifecycle_path") or [],
+                    "remaining_qty": execution_result.get("remaining_qty") or lifecycle.get("remaining_qty"),
+                    "filled_qty": execution_result.get("filled_qty") or lifecycle.get("filled_qty"),
+                    "broker_called": bool(
+                        execution_result.get("broker_called") or safety_flags.get("broker_called")
+                    ),
+                    "live_orders_sent": bool(
+                        execution_result.get("live_orders_sent") or safety_flags.get("live_orders_sent")
+                    ),
+                    "dry_run": bool(execution_result.get("dry_run") or safety_flags.get("dry_run")),
+                    "execution_mode": lifecycle.get("execution_mode"),
+                }
+            )
+
+    state_counts = {}
+    for order in orders:
+        state = order["lifecycle_state"]
+        state_counts[state] = state_counts.get(state, 0) + 1
+
+    terminal_states = {"FILLED", "CANCELLED", "REJECTED", "ERROR", "EXPIRED"}
+    recovery_states = {"TIMEOUT", "RETRYING", "RECOVERY", "UNKNOWN"}
+    terminal_statuses = {"filled", "cancelled", "rejected", "error", "expired"}
+    recovery_statuses = {"timeout", "retrying", "recovery", "unknown"}
+    terminal_count = 0
+    recovery_count = 0
+    open_count = 0
+    for order in orders:
+        state = str(order.get("lifecycle_state") or "").upper()
+        status = str(order.get("status") or "").lower()
+        if state in terminal_states or status in terminal_statuses:
+            terminal_count += 1
+        elif state in recovery_states or status in recovery_statuses:
+            recovery_count += 1
+        else:
+            open_count += 1
+
+    return {
+        "source_paths": [_project_relative_or_absolute(report["path"]) for report in reports],
+        "report_count": len(reports),
+        "order_count": len(orders),
+        "state_counts": state_counts,
+        "open_order_count": open_count,
+        "recovery_order_count": recovery_count,
+        "terminal_order_count": terminal_count,
+        "broker_called": any(order["broker_called"] for order in orders),
+        "live_orders_sent": any(order["live_orders_sent"] for order in orders),
+        "latest_orders": orders[:8],
+    }
+
+
+def _runtime_health_dashboard_summary(reports, action_summary):
+    health_items = []
+    for report in reports:
+        payload = report["payload"]
+        health = (payload.get("metadata") or {}).get("runtime_health")
+        if not isinstance(health, dict):
+            continue
+        health_items.append(
+            {
+                "source_path": _project_relative_or_absolute(report["path"]),
+                "run_id": health.get("run_id") or (payload.get("context") or {}).get("run_id"),
+                "status": health.get("status"),
+                "alerts": health.get("alerts") or [],
+                "kill_switch_active": bool(health.get("kill_switch_active")),
+                "broker_reconciliation_anomalies": int(health.get("broker_reconciliation_anomalies") or 0),
+                "order_failure_rate": health.get("order_failure_rate"),
+                "risk_rejection_rate": health.get("risk_rejection_rate"),
+            }
+        )
+
+    return {
+        "runtime_health_count": len(health_items),
+        "kill_switch_active": any(item["kill_switch_active"] for item in health_items)
+        or bool(action_summary.get("kill_switch_active")),
+        "safe_mode_active": bool(action_summary.get("safe_mode_active")),
+        "pause_new_entries_active": bool(action_summary.get("pause_new_entries_active")),
+        "block_execution_active": bool(action_summary.get("block_execution_active")),
+        "reduce_exposure_active": bool(action_summary.get("reduce_exposure_active")),
+        "broker_reconciliation_anomalies": sum(item["broker_reconciliation_anomalies"] for item in health_items),
+        "latest_runtime_health": health_items[:4],
+    }
+
+
+def _reconciliation_dashboard_summary(reports):
+    path, payload = _latest_json_payload(RECONCILIATION_DIR, preferred_names=("latest.json",))
+    runtime_anomalies = 0
+    for report in reports:
+        health = (report["payload"].get("metadata") or {}).get("runtime_health") or {}
+        runtime_anomalies += int(health.get("broker_reconciliation_anomalies") or 0)
+
+    if payload is None:
+        return {
+            "source_path": _project_relative_or_absolute(RECONCILIATION_DIR / "latest.json"),
+            "exists": False,
+            "status": "NO_ARTIFACT" if runtime_anomalies == 0 else "ANOMALY",
+            "anomaly_count": runtime_anomalies,
+            "drift_count": 0,
+            "missing_local_count": 0,
+            "missing_broker_count": 0,
+            "runtime_anomaly_count": runtime_anomalies,
+            "action_counts": {},
+            "items": [],
+        }
+
+    report = payload.get("report") if isinstance(payload.get("report"), dict) else payload
+    items = report.get("items") or []
+    drift_count = int(report.get("drift_count") or 0)
+    missing_local_count = int(report.get("missing_local_count") or 0)
+    missing_broker_count = int(report.get("missing_broker_count") or 0)
+    anomaly_count = drift_count + missing_local_count + missing_broker_count
+    action_counts = {}
+    for item in items:
+        action = item.get("action") or "unknown"
+        action_counts[action] = action_counts.get(action, 0) + 1
+
+    return {
+        "source_path": _project_relative_or_absolute(path),
+        "exists": True,
+        "status": "ANOMALY" if anomaly_count or runtime_anomalies else "OK",
+        "broker_name": report.get("broker_name"),
+        "checked_count": report.get("checked_count"),
+        "matched_count": report.get("matched_count"),
+        "anomaly_count": anomaly_count + runtime_anomalies,
+        "drift_count": drift_count,
+        "missing_local_count": missing_local_count,
+        "missing_broker_count": missing_broker_count,
+        "runtime_anomaly_count": runtime_anomalies,
+        "action_counts": action_counts,
+        "items": items[:8],
+    }
+
+
+def _fault_drill_dashboard_summary():
+    path, payload = _latest_json_payload(FAULT_DRILL_DIR, preferred_names=("latest.json",))
+    if payload is None:
+        return {
+            "source_path": _project_relative_or_absolute(FAULT_DRILL_DIR / "latest.json"),
+            "exists": False,
+            "status": "NO_ARTIFACT",
+            "scenario_count": 0,
+            "passed_count": 0,
+            "failed_count": 0,
+            "duplicate_order_guard_active": False,
+            "no_duplicate_order": False,
+            "broker_called": False,
+            "live_orders_sent": False,
+        }
+
+    safety = payload.get("safety_assertions") or {}
+    return {
+        "source_path": _project_relative_or_absolute(path),
+        "exists": True,
+        "run_id": payload.get("run_id"),
+        "generated_at": payload.get("generated_at"),
+        "status": payload.get("status"),
+        "scenario_count": int(payload.get("scenario_count") or 0),
+        "passed_count": int(payload.get("passed_count") or 0),
+        "failed_count": int(payload.get("failed_count") or 0),
+        "duplicate_order_guard_active": bool(safety.get("all_duplicate_order_guards_active")),
+        "no_duplicate_order": bool(safety.get("all_no_duplicate_order")),
+        "broker_called": bool(payload.get("broker_called")),
+        "live_orders_sent": bool(payload.get("live_orders_sent")),
+        "contains_real_credentials": bool(payload.get("contains_real_credentials")),
+        "scenarios": [
+            {
+                "scenario_id": scenario.get("scenario_id"),
+                "passed": scenario.get("passed"),
+                "alert_codes": [alert.get("code") for alert in scenario.get("alerts", [])],
+                "action_types": [action.get("action_type") for action in scenario.get("actions", [])],
+            }
+            for scenario in (payload.get("scenarios") or [])
+        ],
+    }
+
+
+def _alert_actions_from_jsonl():
+    actions = []
+    source_paths = []
+    for path in ALERT_ACTION_LOG_CANDIDATES:
+        if not path.exists():
+            continue
+        source_paths.append(_project_relative_or_absolute(path))
+        try:
+            lines = path.read_text(encoding="utf-8").splitlines()
+        except OSError:
+            continue
+        for line in lines:
+            if not line.strip():
+                continue
+            try:
+                payload = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            payload["_source_path"] = _project_relative_or_absolute(path)
+            actions.append(payload)
+    return actions, source_paths
+
+
+def _alert_actions_from_fault_drill():
+    path, payload = _latest_json_payload(FAULT_DRILL_DIR, preferred_names=("latest.json",))
+    if payload is None:
+        return [], []
+    source_path = _project_relative_or_absolute(path)
+    actions = []
+    for scenario in payload.get("scenarios") or []:
+        for action in scenario.get("actions") or []:
+            action = dict(action)
+            action["_source_path"] = source_path
+            action["_scenario_id"] = scenario.get("scenario_id")
+            actions.append(action)
+    return actions, [source_path]
+
+
+def _alert_action_dashboard_summary():
+    jsonl_actions, jsonl_sources = _alert_actions_from_jsonl()
+    drill_actions, drill_sources = _alert_actions_from_fault_drill()
+    actions = jsonl_actions + drill_actions
+    action_type_counts = {}
+    alert_code_counts = {}
+    control_flags = {
+        "safe_mode_active": False,
+        "pause_new_entries_active": False,
+        "block_execution_active": False,
+        "reduce_exposure_active": False,
+        "kill_switch_active": False,
+    }
+    for action in actions:
+        action_type = action.get("action_type") or "unknown"
+        alert_code = action.get("alert_code") or "unknown"
+        action_type_counts[action_type] = action_type_counts.get(action_type, 0) + 1
+        alert_code_counts[alert_code] = alert_code_counts.get(alert_code, 0) + 1
+        effect = ((action.get("metadata") or {}).get("control_effect") or {})
+        control_flags["safe_mode_active"] = control_flags["safe_mode_active"] or bool(
+            effect.get("safe_mode") or action_type == "enter_safe_mode"
+        )
+        control_flags["pause_new_entries_active"] = control_flags["pause_new_entries_active"] or bool(
+            effect.get("pause_new_entries") or action_type == "pause_new_entries"
+        )
+        control_flags["block_execution_active"] = control_flags["block_execution_active"] or bool(
+            effect.get("block_execution") or action_type == "block_execution"
+        )
+        control_flags["reduce_exposure_active"] = control_flags["reduce_exposure_active"] or bool(
+            effect.get("reduce_exposure") or action_type == "reduce_exposure"
+        )
+        control_flags["kill_switch_active"] = control_flags["kill_switch_active"] or bool(
+            effect.get("kill_switch") or action_type == "trigger_kill_switch"
+        )
+
+    latest_actions = sorted(
+        actions,
+        key=lambda action: int(action.get("observed_at") or 0),
+        reverse=True,
+    )[:10]
+    source_paths = sorted(set(jsonl_sources + drill_sources))
+    return {
+        "source_paths": source_paths,
+        "audit_log_count": len(jsonl_sources),
+        "fault_drill_embedded": bool(drill_actions),
+        "action_count": len(actions),
+        "action_type_counts": action_type_counts,
+        "alert_code_counts": alert_code_counts,
+        "safe_mode_active": control_flags["safe_mode_active"],
+        "pause_new_entries_active": control_flags["pause_new_entries_active"],
+        "block_execution_active": control_flags["block_execution_active"],
+        "reduce_exposure_active": control_flags["reduce_exposure_active"],
+        "kill_switch_active": control_flags["kill_switch_active"],
+        "broker_called": any(bool(action.get("broker_called")) for action in actions),
+        "live_orders_sent": any(bool(action.get("live_orders_sent")) for action in actions),
+        "latest_actions": [
+            {
+                "source_path": action.get("_source_path"),
+                "scenario_id": action.get("_scenario_id"),
+                "action_type": action.get("action_type"),
+                "alert_code": action.get("alert_code"),
+                "alert_severity": action.get("alert_severity"),
+                "requires_human_ack": action.get("requires_human_ack"),
+                "broker_called": action.get("broker_called"),
+                "live_orders_sent": action.get("live_orders_sent"),
+                "observed_at": action.get("observed_at"),
+            }
+            for action in latest_actions
+        ],
+    }
+
+
+def live_safety_dashboard_summary():
+    reports = _pipeline_report_payloads()
+    order_lifecycle = _order_lifecycle_dashboard_summary(reports)
+    reconciliation = _reconciliation_dashboard_summary(reports)
+    fault_drill = _fault_drill_dashboard_summary()
+    alert_actions = _alert_action_dashboard_summary()
+    runtime_safety = _runtime_health_dashboard_summary(reports, alert_actions)
+    return {
+        "order_lifecycle": order_lifecycle,
+        "reconciliation": reconciliation,
+        "alert_actions": alert_actions,
+        "runtime_safety": runtime_safety,
+        "fault_drill": fault_drill,
+        "safety": {
+            "network_used": False,
+            "broker_called": bool(
+                order_lifecycle.get("broker_called")
+                or alert_actions.get("broker_called")
+                or fault_drill.get("broker_called")
+            ),
+            "live_orders_sent": bool(
+                order_lifecycle.get("live_orders_sent")
+                or alert_actions.get("live_orders_sent")
+                or fault_drill.get("live_orders_sent")
+            ),
+            "real_credentials_required": False,
+            "contains_real_credentials": bool(fault_drill.get("contains_real_credentials")),
+        },
+    }
+
+
+def secret_artifact_scan_summary(current_payload=None):
+    roots = [
+        PROJECT_ROOT / "logs" / "account-sync-validation",
+        PROJECT_ROOT / "logs" / "ai-decision-advisor-validation",
+        PROJECT_ROOT / "logs" / "fault-drills",
+        PROJECT_ROOT / "logs" / "live",
+        PROJECT_ROOT / "logs" / "monitoring",
+        PROJECT_ROOT / "logs" / "pipeline-runs",
+        PROJECT_ROOT / "logs" / "production-rehearsals",
+        PROJECT_ROOT / "logs" / "reconciliation",
+        PROJECT_ROOT / "logs" / "strategy-validation-artifacts",
+        PROJECT_ROOT / "logs" / "trade-journal",
+        OUTPUT,
+    ]
+    paths, truncated = discover_artifact_paths(roots, max_files=SECRET_SCAN_MAX_FILES)
+    artifact_report = scan_artifact_paths(
+        paths,
+        root=PROJECT_ROOT,
+        truncated=truncated,
+    )
+    current_report = scan_payload(
+        current_payload,
+        source="current_dashboard_payload",
+    ) if current_payload is not None else None
+    reports = [artifact_report]
+    if current_report is not None:
+        reports.append(current_report)
+    finding_count = sum(report.finding_count for report in reports)
+    status = "FAIL" if finding_count else "PASS"
+    return {
+        "status": status,
+        "success": status == "PASS",
+        "finding_count": finding_count,
+        "scanned_file_count": len(artifact_report.scanned_files),
+        "skipped_file_count": len(artifact_report.skipped_files),
+        "truncated": truncated or artifact_report.truncated,
+        "max_files": SECRET_SCAN_MAX_FILES,
+        "target_roots": [_project_relative_or_absolute(path) for path in roots],
+        "artifact_report": artifact_report.to_payload(),
+        "current_dashboard_payload": current_report.to_payload() if current_report is not None else None,
+        "safety": {
+            "network_used": False,
+            "broker_called": False,
+            "live_orders_sent": False,
+            "real_credentials_required": False,
+        },
+    }
+
+
+def _project_relative_or_absolute(path):
+    try:
+        return str(path.relative_to(PROJECT_ROOT))
+    except ValueError:
+        return str(path)
+
+
 def main():
     WEB_DIR.mkdir(parents=True, exist_ok=True)
     tasks = parse_tasks()
+    archived_tasks = parse_archived_tasks()
     layers = parse_layers()
     milestones = parse_milestones(tasks)
     directory = directory_health()
@@ -966,9 +1600,15 @@ def main():
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "project": "SmartQTF",
         "tasks": tasks,
+        "archived_tasks": archived_tasks,
         "layers": layers,
         "milestones": milestones,
         "task_summary": summarize_tasks(tasks),
+        "current_task_summary": summarize_tasks(tasks),
+        "archived_task_summary": archived_task_summary(archived_tasks),
+        "workflow_test_plan": workflow_test_plan_summary(tasks, archived_tasks),
+        "workflow_test_review_console": workflow_test_review_console_summary(tasks),
+        "layer_interaction_tutor": layer_interaction_tutor_summary(tasks),
         "layer_summary": summarize_layers(layers),
         "project_progress": summarize_project_progress(
             tasks,
@@ -987,13 +1627,21 @@ def main():
         "git_status": git_status(),
         "latest_task": latest_actual_task(tasks),
         "latest_rehearsal": latest_production_rehearsal(),
+        "live_safety_dashboard": live_safety_dashboard_summary(),
         "sources": {
             "task_system": str(TASK_SYSTEM.relative_to(PROJECT_ROOT)),
+            "task_archive_dir": str(TASK_ARCHIVE_DIR.relative_to(PROJECT_ROOT)),
+            "workflow_test_todolist": str((WORKFLOW_TEST_TODOLIST if WORKFLOW_TEST_TODOLIST.exists() else WORKFLOW_TEST_TODOLIST_ARCHIVE).relative_to(PROJECT_ROOT)),
+            "workflow_test_review_html": str(WORKFLOW_REVIEW_HTML.relative_to(PROJECT_ROOT)),
+            "workflow_test_review_cases": str(WORKFLOW_REVIEW_CASES.relative_to(PROJECT_ROOT)),
+            "layer_interaction_tutor_html": str(LAYER_TUTOR_HTML.relative_to(PROJECT_ROOT)),
+            "layer_interaction_tutor_cases": str(LAYER_TUTOR_CASES.relative_to(PROJECT_ROOT)),
             "current_state": str(CURRENT_STATE.relative_to(PROJECT_ROOT)),
             "milestones": str(MILESTONES.relative_to(PROJECT_ROOT)),
             "chatgpt_export": str(CHATGPT_EXPORT.relative_to(PROJECT_ROOT)),
         },
     }
+    payload["secret_artifact_scan"] = secret_artifact_scan_summary(payload)
     OUTPUT.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     print(f"Dashboard data written to {OUTPUT.relative_to(PROJECT_ROOT)}")
 

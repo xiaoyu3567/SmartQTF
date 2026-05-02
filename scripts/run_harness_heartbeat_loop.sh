@@ -5,8 +5,10 @@ PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PROMPT_FILE="$PROJECT_ROOT/docs/harness/HEARTBEAT_PROMPT.md"
 LOG_DIR="$PROJECT_ROOT/logs/harness-heartbeat"
 INTERVAL_SECONDS="${1:-600}"
+MAX_IDLE_ROUNDS="${2:-3}"
 QTF_ACTIVATE="/opt/homebrew/Caskroom/miniforge/base/bin/activate"
 QTF_ENV="QTF"
+TASK_SYSTEM_FILE="$PROJECT_ROOT/docs/harness/task-system.md"
 
 mkdir -p "$LOG_DIR"
 
@@ -22,6 +24,16 @@ fi
 
 if [[ ! -f "$QTF_ACTIVATE" ]]; then
   echo "QTF activate script not found: $QTF_ACTIVATE" >&2
+  exit 1
+fi
+
+if [[ ! -f "$TASK_SYSTEM_FILE" ]]; then
+  echo "Task system file not found: $TASK_SYSTEM_FILE" >&2
+  exit 1
+fi
+
+if ! [[ "$MAX_IDLE_ROUNDS" =~ ^[0-9]+$ ]]; then
+  echo "MAX_IDLE_ROUNDS must be a non-negative integer: $MAX_IDLE_ROUNDS" >&2
   exit 1
 fi
 
@@ -44,17 +56,41 @@ update_dashboard() {
   fi
 }
 
+count_actionable_tasks() {
+  python - "$TASK_SYSTEM_FILE" <<'PY'
+import re
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+text = path.read_text(encoding="utf-8")
+match = re.search(r"## 4\. 当前任务板\n(?P<body>.*?)(?:\n## 4\.1\b|\Z)", text, re.S)
+body = match.group("body") if match else text
+count = 0
+for line in body.splitlines():
+    if not line.startswith("|") or "---" in line:
+        continue
+    cells = [cell.strip().strip("`") for cell in line.strip().strip("|").split("|")]
+    if len(cells) >= 3 and cells[2] in {"TODO", "DOING", "REVIEW"}:
+        count += 1
+print(count)
+PY
+}
+
 echo "SmartQTF Harness heartbeat loop"
 echo "Project: $PROJECT_ROOT"
 echo "Prompt:  $PROMPT_FILE"
 echo "Logs:    $LOG_DIR"
 echo "Interval: ${INTERVAL_SECONDS}s"
+echo "Max idle rounds: ${MAX_IDLE_ROUNDS}"
 echo "Python:  $(command -v python)"
 echo "Env:     ${CONDA_DEFAULT_ENV:-unknown}"
 echo "Press Ctrl+C to stop."
 echo
 
 update_dashboard
+
+idle_rounds=0
 
 while true; do
   timestamp="$(date '+%Y%m%d-%H%M%S')"
@@ -70,6 +106,24 @@ while true; do
   } | tee "$log_file"
 
   update_dashboard "$log_file"
+
+  actionable_tasks="$(count_actionable_tasks)"
+  echo "Actionable tasks in current board: ${actionable_tasks}" | tee -a "$log_file"
+
+  if [[ "$actionable_tasks" -eq 0 ]]; then
+    idle_rounds=$((idle_rounds + 1))
+    echo "No TODO/DOING/REVIEW tasks found; idle round ${idle_rounds}/${MAX_IDLE_ROUNDS}." | tee -a "$log_file"
+    if [[ "$MAX_IDLE_ROUNDS" -eq 0 || "$idle_rounds" -ge "$MAX_IDLE_ROUNDS" ]]; then
+      echo "Max idle rounds reached; stopping heartbeat loop without another Codex run." | tee -a "$log_file"
+      echo "===== Heartbeat $timestamp idle-stopped =====" | tee -a "$log_file"
+      exit 0
+    fi
+    echo "Next idle check in ${INTERVAL_SECONDS}s." | tee -a "$log_file"
+    sleep "$INTERVAL_SECONDS"
+    continue
+  fi
+
+  idle_rounds=0
 
   if codex exec \
     --cd "$PROJECT_ROOT" \

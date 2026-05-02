@@ -6,6 +6,7 @@ from uuid import uuid4
 from quant.account.account import CryptoAccount
 from quant.analytics import DailyReviewReporter
 from quant.config import RuntimeConfig, load_runtime_config
+from quant.execution.bracket_orchestrator import BracketExecutionOrchestrator
 from quant.data.providers.mock_provider import MockProvider
 from quant.execution.broker import BrokerAdapter
 from quant.execution.engine import ExecutionEngine
@@ -18,6 +19,7 @@ from quant.risk.risk_manager import RiskManager
 from quant.schemas import (
     PayloadSource,
     BrokerOrderRequest,
+    BracketExecutionPlan,
     LiveOrderGateDecision,
     OrderStatus,
     PipelineRunContext,
@@ -36,6 +38,14 @@ class LiveOrderGate:
 
     DEFAULT_PREFLIGHT_ARTIFACT_PATH = "logs/production-rehearsals/latest.json"
     DEFAULT_PREFLIGHT_MAX_AGE_SECONDS = 24 * 60 * 60
+    VALID_CREDENTIAL_MODES = {
+        "env",
+        "environment",
+        "external_secrets",
+        "live_env",
+        "secret_manager",
+        "vault",
+    }
 
     def __init__(self, settings=None, *, risk_manager=None, clock=None, project_root=None):
         self.settings = dict(settings or {})
@@ -43,7 +53,7 @@ class LiveOrderGate:
         self.clock = clock or time.time
         self.project_root = Path(project_root) if project_root is not None else Path(__file__).resolve().parents[2]
 
-    def evaluate(self, order_intent):
+    def evaluate(self, order_intent, *, portfolio_allocation=None, dry_run=None):
         checked_at = int(self.clock())
         reason_codes = []
         metadata = {
@@ -51,9 +61,40 @@ class LiveOrderGate:
             "symbol": order_intent.symbol,
         }
 
+        live_mode_enabled = self._live_mode_enabled()
+        if not live_mode_enabled:
+            reason_codes.append("live_mode_not_enabled")
+
         allow_live_orders = self.settings.get("allow_live_orders") is True
         if not allow_live_orders:
             reason_codes.append("allow_live_orders_disabled")
+
+        risk_approved = getattr(order_intent, "risk_approved", False) is True
+        if not risk_approved:
+            reason_codes.append("risk_approval_missing")
+
+        portfolio_context = self._portfolio_allocation_context(order_intent, portfolio_allocation)
+        metadata.update(portfolio_context["metadata"])
+        portfolio_allocation_approved = portfolio_context["approved"]
+        if not portfolio_context["present"]:
+            reason_codes.append("portfolio_allocation_missing")
+        elif not portfolio_allocation_approved:
+            reason_codes.append("portfolio_allocation_not_approved")
+        if portfolio_context["quantity_invalid"]:
+            reason_codes.append("portfolio_allocated_quantity_invalid")
+        if portfolio_context["quantity_mismatch"]:
+            reason_codes.append("portfolio_allocated_quantity_mismatch")
+        if portfolio_context["client_order_id_mismatch"]:
+            reason_codes.append("portfolio_client_order_id_mismatch")
+
+        dry_run_enabled = self._dry_run_enabled(dry_run)
+        if dry_run_enabled:
+            reason_codes.append("live_dry_run_enabled")
+
+        credential_mode, credential_error = self._credential_mode()
+        if credential_error is not None:
+            reason_codes.append(credential_error)
+        metadata["credential_mode"] = credential_mode
 
         require_manual_preflight = self.settings.get("require_manual_preflight") is True
         if not require_manual_preflight:
@@ -109,7 +150,12 @@ class LiveOrderGate:
             reason_codes=reason_codes,
             message=("live order gate approved" if approved else "live order gate rejected order"),
             checked_at=checked_at,
+            live_mode_enabled=live_mode_enabled,
             allow_live_orders=allow_live_orders,
+            risk_approved=risk_approved,
+            portfolio_allocation_approved=portfolio_allocation_approved,
+            dry_run=dry_run_enabled,
+            credential_mode=credential_mode,
             preflight_artifact_path=str(artifact_path),
             preflight_generated_at=preflight_generated_at,
             preflight_artifact_age_seconds=preflight_age_seconds,
@@ -160,18 +206,167 @@ class LiveOrderGate:
         except (TypeError, ValueError):
             return None
 
+    def _live_mode_enabled(self):
+        if self._explicit_true(self.settings.get("live_mode")):
+            return True
+        for key in ("runtime_source", "source", "broker_mode", "mode"):
+            value = self.settings.get(key)
+            if hasattr(value, "value"):
+                value = value.value
+            if str(value).strip().lower() == "live":
+                return True
+        return False
+
+    def _dry_run_enabled(self, dry_run):
+        if dry_run is not None:
+            return bool(dry_run)
+        return not self._explicit_false(self.settings.get("dry_run"))
+
+    def _credential_mode(self):
+        raw_mode = self.settings.get("credential_mode")
+        if raw_mode is None:
+            return "missing", "credential_mode_missing"
+        mode = str(raw_mode).strip().lower()
+        if mode in self.VALID_CREDENTIAL_MODES:
+            return mode, None
+        return mode or "missing", "credential_mode_invalid"
+
+    def _portfolio_allocation_context(self, order_intent, portfolio_allocation):
+        metadata = {}
+        if portfolio_allocation is None:
+            return {
+                "present": False,
+                "approved": False,
+                "quantity_invalid": False,
+                "quantity_mismatch": False,
+                "client_order_id_mismatch": False,
+                "metadata": metadata,
+            }
+
+        allocation_id = self._field(portfolio_allocation, "allocation_id")
+        risk_decision_id = self._field(portfolio_allocation, "risk_decision_id")
+        approved = self._field(portfolio_allocation, "approved", False) is True
+        allocated_quantity = self._field(portfolio_allocation, "allocated_quantity")
+        if allocated_quantity is None:
+            allocated_quantity = self._field(portfolio_allocation, "quantity")
+        client_order_id = self._field(portfolio_allocation, "client_order_id")
+
+        matching_allocation = self._matching_allocation(order_intent, portfolio_allocation)
+        if matching_allocation is not None:
+            approved = self._field(matching_allocation, "approved", approved) is True
+            allocated_quantity = self._field(matching_allocation, "allocated_quantity", allocated_quantity)
+            client_order_id = self._field(matching_allocation, "client_order_id", client_order_id)
+            risk_decision_id = self._field(matching_allocation, "risk_decision_id", risk_decision_id)
+
+        metadata["portfolio_allocation_id"] = allocation_id
+        metadata["portfolio_client_order_id"] = client_order_id
+        metadata["portfolio_allocated_quantity"] = allocated_quantity
+        metadata["risk_decision_id"] = risk_decision_id
+
+        quantity_value = self._float_or_none(allocated_quantity)
+        quantity_invalid = quantity_value is None or quantity_value <= 0.0
+        quantity_mismatch = False
+        if not quantity_invalid:
+            quantity_mismatch = abs(quantity_value - float(order_intent.quantity)) > 1e-9
+        client_order_id_mismatch = client_order_id not in (None, order_intent.client_order_id)
+
+        return {
+            "present": True,
+            "approved": approved and not quantity_invalid and not quantity_mismatch and not client_order_id_mismatch,
+            "quantity_invalid": quantity_invalid,
+            "quantity_mismatch": quantity_mismatch,
+            "client_order_id_mismatch": client_order_id_mismatch,
+            "metadata": metadata,
+        }
+
+    def _matching_allocation(self, order_intent, portfolio_allocation):
+        allocations = self._field(portfolio_allocation, "allocations", [])
+        for allocation in allocations or []:
+            if self._field(allocation, "client_order_id") == order_intent.client_order_id:
+                return allocation
+        return None
+
+    @staticmethod
+    def _field(source, name, default=None):
+        if isinstance(source, dict):
+            return source.get(name, default)
+        return getattr(source, name, default)
+
+    @staticmethod
+    def _float_or_none(value):
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return None
+
+    @staticmethod
+    def _explicit_true(value):
+        if value is True:
+            return True
+        return str(value).strip().lower() in {"1", "true", "yes", "on"}
+
+    @staticmethod
+    def _explicit_false(value):
+        if value is False:
+            return True
+        return str(value).strip().lower() in {"0", "false", "no", "off"}
+
 
 class BrokerExecutionHandler:
     """Adapts a live BrokerAdapter to the orchestrator execution contract."""
 
-    def __init__(self, broker: BrokerAdapter, live_order_gate=None):
+    production_entrypoint = "execution_order_plan_bracket_orchestrator_v1"
+
+    def __init__(
+        self,
+        broker: BrokerAdapter,
+        live_order_gate=None,
+        *,
+        bracket_orchestrator=None,
+        order_store=None,
+        idempotency_registry=None,
+    ):
         self.broker = broker
         self.live_order_gate = live_order_gate or LiveOrderGate()
+        self.bracket_orchestrator = bracket_orchestrator or BracketExecutionOrchestrator(
+            broker,
+            self.live_order_gate,
+            order_store=order_store,
+            idempotency_registry=idempotency_registry,
+        )
 
-    def on_order_intent(self, order_intent, price, index):
-        gate_decision = self.live_order_gate.evaluate(order_intent)
+    def on_execution_order_plan(
+        self,
+        execution_order_plan,
+        price,
+        index,
+        *,
+        portfolio_allocation=None,
+        dry_run=None,
+        exchange_readiness_request=None,
+    ):
+        plan = self._coerce_execution_plan(execution_order_plan)
+        if exchange_readiness_request is None:
+            exchange_readiness_request = self._exchange_readiness_request_from_plan(plan)
+        result = self.bracket_orchestrator.execute(
+            plan,
+            portfolio_allocation=portfolio_allocation,
+            dry_run=dry_run,
+            reference_price=price,
+            exchange_readiness_request=exchange_readiness_request,
+        )
+        return self._order_result_from_bracket_result(plan, result)
+
+    def on_order_intent(self, order_intent, price, index, *, portfolio_allocation=None, dry_run=None):
+        gate_decision = self.live_order_gate.evaluate(
+            order_intent,
+            portfolio_allocation=portfolio_allocation,
+            dry_run=dry_run,
+        )
         if not gate_decision.approved:
             return self._blocked_by_live_order_gate(order_intent, gate_decision)
+        if not getattr(order_intent, "reduce_only", False):
+            return self._blocked_legacy_single_order_path(order_intent, gate_decision)
 
         request = BrokerOrderRequest(
             client_order_id=order_intent.client_order_id,
@@ -199,7 +394,36 @@ class BrokerExecutionHandler:
             "rejection_code": result.rejection_code,
             "rejection_reason": result.rejection_reason,
             "live_order_gate": gate_decision.to_payload(),
+            "broker_called": True,
             "live_orders_sent": True,
+            **self._portfolio_execution_fields(gate_decision),
+        }
+
+    @staticmethod
+    def _blocked_legacy_single_order_path(order_intent, gate_decision):
+        reason_codes = [
+            "execution_order_plan_required",
+            "legacy_single_order_path_deprecated",
+        ]
+        return {
+            "order_id": f"blocked:{order_intent.client_order_id}",
+            "broker_order_id": None,
+            "client_order_id": order_intent.client_order_id,
+            "symbol": order_intent.symbol,
+            "side": order_intent.side.value if hasattr(order_intent.side, "value") else order_intent.side,
+            "status": OrderStatus.REJECTED.value,
+            "filled_qty": 0.0,
+            "remaining_qty": order_intent.quantity,
+            "fill_price": None,
+            "rejection_code": "execution_order_plan_required",
+            "rejection_reason": ", ".join(reason_codes),
+            "live_order_gate": gate_decision.to_payload(),
+            "broker_called": False,
+            "live_orders_sent": False,
+            "production_entrypoint": BrokerExecutionHandler.production_entrypoint,
+            "legacy_single_order_path_deprecated": True,
+            "reason_codes": reason_codes,
+            **BrokerExecutionHandler._portfolio_execution_fields(gate_decision),
         }
 
     @staticmethod
@@ -217,8 +441,130 @@ class BrokerExecutionHandler:
             "rejection_code": "live_order_gate_rejected",
             "rejection_reason": ", ".join(gate_decision.reason_codes),
             "live_order_gate": gate_decision.to_payload(),
+            "broker_called": False,
             "live_orders_sent": False,
+            **BrokerExecutionHandler._portfolio_execution_fields(gate_decision),
         }
+
+    @staticmethod
+    def _coerce_execution_plan(execution_order_plan):
+        if isinstance(execution_order_plan, BracketExecutionPlan):
+            return execution_order_plan
+        return BracketExecutionPlan.from_payload(execution_order_plan)
+
+    @staticmethod
+    def _exchange_readiness_request_from_plan(plan):
+        metadata = dict(plan.metadata or {})
+        return metadata.get("exchange_readiness_request")
+
+    def _order_result_from_bracket_result(self, plan, result):
+        enriched = dict(result)
+        entry_result = dict(enriched.get("entry_order_result") or {})
+        bracket_status = enriched.get("status")
+        bracket_safety_flags = dict(enriched.get("safety_flags") or {})
+        metadata = dict(enriched.get("metadata") or {})
+        live_gate = dict(enriched.get("live_order_gate") or {})
+        live_gate_metadata = dict(live_gate.get("metadata") or {})
+        requested_qty = self._float_or_none(entry_result.get("requested_qty"))
+        filled_qty = self._float_or_none(entry_result.get("filled_qty"))
+        if requested_qty is None:
+            requested_qty = float(plan.entry_order.quantity)
+        if filled_qty is None:
+            filled_qty = 0.0
+
+        if entry_result.get("status") is not None:
+            enriched["status"] = entry_result["status"]
+        elif bracket_status == "REJECTED":
+            enriched["status"] = OrderStatus.REJECTED.value
+        elif bracket_status == "CANCELLED_NOT_FILLED":
+            enriched["status"] = OrderStatus.CANCELLED.value
+        enriched.setdefault("order_id", entry_result.get("broker_order_id") or plan.entry_order.client_order_id)
+        enriched.setdefault("broker_order_id", entry_result.get("broker_order_id"))
+        enriched.setdefault("client_order_id", plan.entry_order.client_order_id)
+        enriched.setdefault("symbol", plan.entry_order.symbol)
+        enriched.setdefault(
+            "side",
+            plan.entry_order.side.value if hasattr(plan.entry_order.side, "value") else plan.entry_order.side,
+        )
+        enriched.setdefault("filled_qty", filled_qty)
+        enriched.setdefault("remaining_qty", max(0.0, requested_qty - filled_qty))
+        enriched.setdefault("fill_price", entry_result.get("avg_fill_price"))
+        rejection_code = entry_result.get("rejection_code")
+        if rejection_code is None and bracket_status == "REJECTED":
+            live_gate = enriched.get("live_order_gate") or {}
+            if live_gate.get("approved") is False:
+                rejection_code = "live_order_gate_rejected"
+            else:
+                reason_codes = list(enriched.get("reason_codes") or [])
+                rejection_code = reason_codes[0] if reason_codes else "bracket_execution_rejected"
+        enriched.setdefault("rejection_code", rejection_code)
+        enriched.setdefault(
+            "rejection_reason",
+            entry_result.get("rejection_reason")
+            or ", ".join(enriched.get("reason_codes") or []),
+        )
+        enriched["bracket_execution_status"] = bracket_status
+        enriched["bracket_safety_flags"] = bracket_safety_flags
+        enriched["production_entrypoint"] = self.production_entrypoint
+        enriched["legacy_single_order_path_deprecated"] = True
+        self._attach_bracket_portfolio_fields(enriched, metadata, live_gate_metadata)
+        return enriched
+
+    @staticmethod
+    def _float_or_none(value):
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return None
+
+    @staticmethod
+    def _attach_bracket_portfolio_fields(enriched, metadata, live_gate_metadata):
+        allocation_id = (
+            enriched.get("allocation_id")
+            or metadata.get("portfolio_allocation_id")
+            or live_gate_metadata.get("portfolio_allocation_id")
+        )
+        allocated_quantity = (
+            metadata.get("portfolio_allocated_quantity")
+            if metadata.get("portfolio_allocated_quantity") is not None
+            else live_gate_metadata.get("portfolio_allocated_quantity")
+        )
+        portfolio_client_order_id = (
+            metadata.get("portfolio_client_order_id")
+            or live_gate_metadata.get("portfolio_client_order_id")
+        )
+        risk_decision_id = (
+            enriched.get("risk_decision_id")
+            or metadata.get("portfolio_risk_decision_id")
+            or live_gate_metadata.get("risk_decision_id")
+        )
+        fields = {
+            "allocation_id": allocation_id,
+            "portfolio_allocation_id": allocation_id,
+            "allocated_quantity": allocated_quantity,
+            "portfolio_allocated_quantity": allocated_quantity,
+            "portfolio_client_order_id": portfolio_client_order_id,
+            "risk_decision_id": risk_decision_id,
+        }
+        for key, value in fields.items():
+            if value is not None:
+                enriched[key] = value
+
+    @staticmethod
+    def _portfolio_execution_fields(gate_decision):
+        metadata = dict(getattr(gate_decision, "metadata", {}) or {})
+        allocation_id = metadata.get("portfolio_allocation_id")
+        allocated_quantity = metadata.get("portfolio_allocated_quantity")
+        fields = {
+            "allocation_id": allocation_id,
+            "portfolio_allocation_id": allocation_id,
+            "portfolio_approved": gate_decision.portfolio_allocation_approved,
+            "allocated_quantity": allocated_quantity,
+            "portfolio_allocated_quantity": allocated_quantity,
+            "portfolio_client_order_id": metadata.get("portfolio_client_order_id"),
+            "risk_decision_id": metadata.get("risk_decision_id"),
+        }
+        return {key: value for key, value in fields.items() if value is not None}
 
 
 class LiveDryRunExecutionHandler:
@@ -251,6 +597,7 @@ class LiveDryRunExecutionHandler:
             "rejection_code": None,
             "rejection_reason": None,
             "dry_run": True,
+            "broker_called": False,
             "live_orders_sent": False,
             "broker_plugin": self.broker_plugin,
         }
@@ -343,6 +690,7 @@ class TradingRuntimeOrchestrator:
             "execution_engine": execution_engine,
             "account": account,
             "source": runtime_config.source,
+            "multi_timeframe_config": runtime_config.multi_timeframe,
         }
         handler = PaperTradingOrchestrator(**paper_kwargs)
 
@@ -378,6 +726,7 @@ class TradingRuntimeOrchestrator:
             execution_engine=execution_engine,
             account=account,
             source=PayloadSource.LIVE,
+            multi_timeframe_config=runtime_config.multi_timeframe,
         )
         runtime = cls.from_shared_pipeline(
             live=handler,
@@ -585,8 +934,8 @@ class TradingRuntimeOrchestrator:
             risk_manager.enable_kill_switch("configured kill switch")
         return risk_manager
 
-    @staticmethod
-    def _build_execution_engine(config, registry, account, risk_manager=None):
+    @classmethod
+    def _build_execution_engine(cls, config, registry, account, risk_manager=None):
         execution = registry.create(
             PluginKind.EXECUTION,
             config.broker.broker_plugin,
@@ -596,9 +945,12 @@ class TradingRuntimeOrchestrator:
         if hasattr(execution, "on_order_intent"):
             return execution
         if isinstance(execution, BrokerAdapter):
+            gate_settings = dict(config.broker.settings)
+            gate_settings.setdefault("runtime_source", cls._enum_value(config.source))
+            gate_settings.setdefault("broker_mode", cls._enum_value(config.broker.mode))
             return BrokerExecutionHandler(
                 execution,
-                live_order_gate=LiveOrderGate(config.broker.settings, risk_manager=risk_manager),
+                live_order_gate=LiveOrderGate(gate_settings, risk_manager=risk_manager),
             )
         raise TypeError("execution plugin must return an on_order_intent handler or BrokerAdapter")
 
@@ -641,6 +993,10 @@ class TradingRuntimeOrchestrator:
                 if "fast_window" in parameters and "slow_window" in parameters:
                     return (parameters["fast_window"], parameters["slow_window"])
         return (3, 5)
+
+    @staticmethod
+    def _enum_value(value):
+        return value.value if hasattr(value, "value") else value
 
     @classmethod
     def _register_builtin_plugins(cls, registry):
