@@ -1,0 +1,49 @@
+{
+  "_comment": "Example only. Do not place this file under logs/strategy-validation-artifacts/artifacts/ or treat it as real OOS/walk-forward/Monte Carlo evidence.",
+  "artifact_id": "example-artifact-001",
+  "candidate_version": "review-2026-05-03-BTCUSDT-ma_crossover",
+  "generated_at": 1777816800,
+  "metrics": {
+    "generated_at": 1777816800,
+    "max_drawdown": 1.8,
+    "monte_carlo_survival_rate": 0.83,
+    "report_id": "example-oos-wf-mc-001",
+    "sharpe_ratio": 1.24,
+    "total_net_pnl": 42.5,
+    "trade_count": 36,
+    "validation_slices": [
+      {
+        "kind": "out_of_sample",
+        "max_drawdown": 0.9,
+        "name": "oos-2026-q1",
+        "sharpe_ratio": 1.1,
+        "total_net_pnl": 18.0,
+        "trade_count": 12,
+        "win_rate": 0.58
+      },
+      {
+        "kind": "walk_forward",
+        "max_drawdown": 1.1,
+        "name": "walk-forward-001",
+        "sharpe_ratio": 1.02,
+        "total_net_pnl": 14.5,
+        "trade_count": 10,
+        "win_rate": 0.6
+      },
+      {
+        "kind": "walk_forward",
+        "max_drawdown": 1.0,
+        "name": "walk-forward-002",
+        "sharpe_ratio": 0.97,
+        "total_net_pnl": 10.0,
+        "trade_count": 14,
+        "win_rate": 0.57
+      }
+    ],
+    "win_rate": 0.59
+  },
+  "source_path": "frozen-validation-artifacts/BTCUSDT/ma_crossover/review-2026-05-03-BTCUSDT-ma_crossover.json",
+  "source_report_id": "daily-review-2026-05-03",
+  "strategy_id": "ma_crossover",
+  "symbol": "BTCUSDT"
+}

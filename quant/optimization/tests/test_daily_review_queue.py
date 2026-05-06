@@ -16,6 +16,8 @@ from quant.optimization import (
 from quant.schemas import (
     DailyReviewBucket,
     DailyReviewReport,
+    MonteCarloSimulationMethod,
+    MonteCarloValidation,
     StrategyValidationArtifact,
     StrategyPromotionAction,
     StrategyValidationMetrics,
@@ -145,6 +147,17 @@ def test_daily_review_planner_accepts_external_validation_metrics_for_gate(tmp_p
                 ),
             ],
             monte_carlo_survival_rate=0.91,
+            monte_carlo_validation=MonteCarloValidation(
+                method=MonteCarloSimulationMethod.HYBRID,
+                run_count=500,
+                perturbation_dimensions=[
+                    "trade_order_shuffle",
+                    "return_perturbation",
+                    "slippage_fee_perturbation",
+                ],
+                seed=42,
+                survival_threshold=0.8,
+            ),
         )
 
     record = planner.enqueue_from_report(
@@ -206,6 +219,17 @@ def test_daily_review_planner_uses_real_validation_artifact_store(tmp_path):
                     ),
                 ],
                 monte_carlo_survival_rate=0.92,
+                monte_carlo_validation=MonteCarloValidation(
+                    method=MonteCarloSimulationMethod.HYBRID,
+                    run_count=500,
+                    perturbation_dimensions=[
+                        "trade_order_shuffle",
+                        "return_perturbation",
+                        "slippage_fee_perturbation",
+                    ],
+                    seed=42,
+                    survival_threshold=0.8,
+                ),
             ),
         )
     )

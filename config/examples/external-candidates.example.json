@@ -1,0 +1,57 @@
+{
+  "schema_version": "1.0",
+  "description": "Fixture external strategy candidates for H-OPT-020 ingestion. These are examples only and must not be treated as validated PASS artifacts.",
+  "candidates": [
+    {
+      "symbol": "BTCUSDT",
+      "timeframe": "5m",
+      "strategy_id": "ma_crossover",
+      "parameters": {
+        "fast_window": 1,
+        "slow_window": 8
+      },
+      "window_config": {
+        "train_bars": 12,
+        "test_bars": 8,
+        "step_bars": 8,
+        "holdout_ratio": 0.3,
+        "min_trade_count": 5
+      },
+      "source": {
+        "kind": "example",
+        "name": "h-opt-020-external-candidate-fixture",
+        "provenance": "config example"
+      },
+      "notes": "Schema fixture for ingestion and coverage validation only.",
+      "fingerprint": "example-btcusdt-5m-ma-crossover-v1"
+    },
+    {
+      "symbol": "ETHUSDT",
+      "timeframe": "15m",
+      "strategy_id": "ema_trend_filter",
+      "parameters": {
+        "fast_window": 8,
+        "slow_window": 34,
+        "atr_window": 14,
+        "volatility_window": 20,
+        "max_atr_pct": 0.08,
+        "max_volatility_pct": 0.08,
+        "min_trend_strength": 0.0
+      },
+      "window_config": {
+        "train_bars": 12,
+        "test_bars": 8,
+        "step_bars": 8,
+        "holdout_ratio": 0.3,
+        "min_trade_count": 5
+      },
+      "source": {
+        "kind": "example",
+        "name": "h-opt-020-external-candidate-fixture",
+        "provenance": "config example"
+      },
+      "notes": "Second symbol fixture for cross-symbol ingestion tests.",
+      "fingerprint": "example-ethusdt-15m-ema-trend-filter-v1"
+    }
+  ]
+}

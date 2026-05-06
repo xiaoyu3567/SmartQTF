@@ -383,6 +383,7 @@ def _flatten_strings(value):
 def test_production_example_configs_load_without_real_credentials():
     example_dir = PROJECT_ROOT / "config" / "examples"
     paper_config = load_runtime_config(example_dir / "paper-runtime.example.json")
+    paper_mtf_config = load_runtime_config(example_dir / "paper-runtime-multitimeframe.example.json")
     sandbox_config = load_runtime_config(example_dir / "sandbox-runtime.example.json")
     live_config = load_runtime_config(example_dir / "live-runtime.example.json")
     live_payload = _example_payload(example_dir / "live-runtime.example.json")
@@ -396,6 +397,12 @@ def test_production_example_configs_load_without_real_credentials():
     assert paper_config.scan.candidate_symbols == ["BTCUSDT"]
     assert paper_config.environment.tier == RuntimeEnvironmentTier.PAPER
     assert paper_config.environment.live_order_submission is False
+    assert paper_mtf_config.source == PayloadSource.PAPER
+    assert paper_mtf_config.markets[0].timeframe == "5m"
+    assert paper_mtf_config.scan.default_timeframe == "5m"
+    assert paper_mtf_config.multi_timeframe.enabled is True
+    assert paper_mtf_config.multi_timeframe.execution_timeframe == "5m"
+    assert paper_mtf_config.multi_timeframe.context_timeframes == ["15m", "1h", "4h"]
     assert sandbox_config.source == PayloadSource.LIVE
     assert sandbox_config.environment.tier == RuntimeEnvironmentTier.EXCHANGE_SANDBOX
     assert sandbox_config.broker.settings["allow_live_orders"] is False
@@ -426,6 +433,10 @@ def test_production_example_configs_can_construct_runtime_handlers():
         example_dir / "paper-runtime.example.json",
         registry=PluginRegistry(),
     )
+    paper_mtf_runtime = TradingRuntimeOrchestrator.from_config_file(
+        example_dir / "paper-runtime-multitimeframe.example.json",
+        registry=PluginRegistry(),
+    )
 
     live_registry = PluginRegistry()
     live_registry.register(PluginKind.DATA, "okx_public", lambda: _LiveReadinessProvider())
@@ -440,5 +451,6 @@ def test_production_example_configs_can_construct_runtime_handlers():
     )
 
     assert PayloadSource.PAPER in paper_runtime.handlers
+    assert PayloadSource.PAPER in paper_mtf_runtime.handlers
     assert PayloadSource.LIVE in live_runtime.handlers
     assert PayloadSource.LIVE in sandbox_runtime.handlers

@@ -53,6 +53,7 @@ def run_strategy_validation_artifacts_validation(
             required_evidence=_required_evidence(
                 require_out_of_sample=True,
                 min_walk_forward_windows=min_walk_forward_windows,
+                min_walk_forward_pass_rate=min_walk_forward_pass_rate,
                 min_monte_carlo_survival_rate=min_monte_carlo_survival_rate,
             ),
             status="SKIPPED",
@@ -89,6 +90,7 @@ def run_strategy_validation_artifacts_validation(
             required_evidence=_required_evidence(
                 require_out_of_sample=True,
                 min_walk_forward_windows=min_walk_forward_windows,
+                min_walk_forward_pass_rate=min_walk_forward_pass_rate,
                 min_monte_carlo_survival_rate=min_monte_carlo_survival_rate,
             ),
         ),
@@ -119,6 +121,9 @@ def _validate_artifact_path(
 
     evidence = _evidence_summary(artifact)
     missing_evidence = _missing_evidence_reason_codes(evidence)
+    missing_provenance = _missing_provenance_reason_code(artifact)
+    if missing_provenance:
+        missing_evidence.append(missing_provenance)
     decision = gate.evaluate(
         candidate=_candidate_from_artifact(artifact),
         metrics=artifact.metrics,
@@ -131,7 +136,7 @@ def _validate_artifact_path(
 
     if missing_evidence:
         category = "missing_evidence"
-        message = "strategy validation artifact is missing required anti-overfit evidence"
+        message = "strategy validation artifact is missing required anti-overfit evidence or provenance"
     elif require_gate_pass and gate_rejected:
         category = "promotion_gate"
         message = "strategy validation artifact did not pass the configured promotion gate"
@@ -223,12 +228,23 @@ def _required_evidence(
     *,
     require_out_of_sample: bool,
     min_walk_forward_windows: int,
+    min_walk_forward_pass_rate: float | None,
     min_monte_carlo_survival_rate: float | None,
 ) -> dict[str, Any]:
     return {
         "out_of_sample_required": require_out_of_sample,
         "min_walk_forward_windows": min_walk_forward_windows,
+        "min_walk_forward_pass_rate": min_walk_forward_pass_rate,
         "monte_carlo_required": min_monte_carlo_survival_rate is not None,
+        "min_monte_carlo_survival_rate": min_monte_carlo_survival_rate,
+        "monte_carlo_required_fields": [
+            "metrics.monte_carlo_survival_rate",
+            "metrics.monte_carlo_validation.method",
+            "metrics.monte_carlo_validation.run_count",
+            "metrics.monte_carlo_validation.perturbation_dimensions",
+            "metrics.monte_carlo_validation.survival_threshold",
+        ],
+        "source_provenance_required": True,
     }
 
 
@@ -243,12 +259,50 @@ def _evidence_summary(artifact: StrategyValidationArtifact) -> dict[str, Any]:
         for item in artifact.metrics.validation_slices
         if item.kind == StrategyValidationSliceKind.WALK_FORWARD
     ]
+    walk_forward_pass_count = sum(
+        1 for item in walk_forward if _walk_forward_slice_passes(item)
+    )
+    walk_forward_pass_rate = (
+        walk_forward_pass_count / len(walk_forward) if walk_forward else None
+    )
+    monte_carlo_validation = artifact.metrics.monte_carlo_validation
     return {
         "has_out_of_sample": bool(out_of_sample),
         "out_of_sample_count": len(out_of_sample),
         "walk_forward_count": len(walk_forward),
-        "has_monte_carlo": artifact.metrics.monte_carlo_survival_rate is not None,
+        "walk_forward_window_names": [item.name for item in walk_forward],
+        "walk_forward_pass_count": walk_forward_pass_count,
+        "walk_forward_pass_rate": walk_forward_pass_rate,
+        "has_monte_carlo": (
+            artifact.metrics.monte_carlo_survival_rate is not None
+            and monte_carlo_validation is not None
+        ),
         "monte_carlo_survival_rate": artifact.metrics.monte_carlo_survival_rate,
+        "monte_carlo_method": (
+            monte_carlo_validation.method
+            if monte_carlo_validation is not None
+            else None
+        ),
+        "monte_carlo_run_count": (
+            monte_carlo_validation.run_count
+            if monte_carlo_validation is not None
+            else None
+        ),
+        "monte_carlo_seed": (
+            monte_carlo_validation.seed
+            if monte_carlo_validation is not None
+            else None
+        ),
+        "monte_carlo_perturbation_dimensions": (
+            list(monte_carlo_validation.perturbation_dimensions)
+            if monte_carlo_validation is not None
+            else []
+        ),
+        "monte_carlo_survival_threshold": (
+            monte_carlo_validation.survival_threshold
+            if monte_carlo_validation is not None
+            else None
+        ),
     }
 
 
@@ -261,6 +315,18 @@ def _missing_evidence_reason_codes(evidence: dict[str, Any]) -> list[str]:
     if not evidence["has_monte_carlo"]:
         reason_codes.append("missing_monte_carlo_validation")
     return reason_codes
+
+
+def _missing_provenance_reason_code(
+    artifact: StrategyValidationArtifact,
+) -> str | None:
+    if artifact.source_report_id or artifact.source_path:
+        return None
+    return "missing_source_provenance"
+
+
+def _walk_forward_slice_passes(item: Any) -> bool:
+    return item.trade_count >= 1 and item.total_net_pnl >= 0.0
 
 
 def _candidate_from_artifact(artifact: StrategyValidationArtifact) -> StrategyVersion:

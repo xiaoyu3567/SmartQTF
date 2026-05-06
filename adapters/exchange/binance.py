@@ -9,6 +9,7 @@ from typing import Any, Dict, Optional
 from urllib import error, parse, request
 
 from quant.proxy import build_proxy_opener, proxy_enabled, proxy_url
+from quant.data.schemas.market import Kline, KlineBatch
 from quant.schemas.execution import InstrumentOrderRules
 
 
@@ -40,8 +41,13 @@ class BinanceAdapter:
         require_credentials: bool = True,
         logger: Optional[logging.Logger] = None,
     ):
-        self.api_key = self._clean_secret(api_key if api_key is not None else os.getenv("BINANCE_API_KEY"))
-        self.secret = self._clean_secret(secret if secret is not None else os.getenv("BINANCE_SECRET"))
+        should_load_env_credentials = require_credentials
+        self.api_key = self._clean_secret(
+            api_key if api_key is not None else (os.getenv("BINANCE_API_KEY") if should_load_env_credentials else None)
+        )
+        self.secret = self._clean_secret(
+            secret if secret is not None else (os.getenv("BINANCE_SECRET") if should_load_env_credentials else None)
+        )
         self.base_url = base_url.rstrip("/")
         self.timeout = timeout
         self.recv_window = recv_window
@@ -202,6 +208,34 @@ class BinanceAdapter:
     def get_exchange_info(self, symbol: Optional[str] = None) -> Dict[str, Any]:
         params = {"symbol": self._normalize_symbol(symbol)} if symbol else None
         return self._public_request("GET", "/api/v3/exchangeInfo", params=params)
+
+    def get_klines(
+        self,
+        symbol: str,
+        timeframe: str,
+        *,
+        start_ts: Optional[int] = None,
+        end_ts: Optional[int] = None,
+        limit: int = 100,
+    ) -> KlineBatch:
+        params: Dict[str, Any] = {
+            "symbol": self._normalize_symbol(symbol),
+            "interval": self._normalize_timeframe(timeframe),
+            "limit": self._normalize_kline_limit(limit),
+        }
+        if start_ts is not None:
+            params["startTime"] = self._to_milliseconds(start_ts)
+        if end_ts is not None:
+            params["endTime"] = self._to_milliseconds(end_ts)
+
+        response = self._public_request("GET", "/api/v3/klines", params=params)
+        klines = [self._parse_kline(item) for item in response.get("data", [])]
+        return KlineBatch(
+            symbol=params["symbol"],
+            timeframe=timeframe,
+            venue="binance",
+            klines=sorted(klines, key=lambda kline: kline.timestamp),
+        )
 
     def get_instrument_rules(self, symbol: str) -> InstrumentOrderRules:
         normalized_symbol = self._normalize_symbol(symbol)
@@ -457,6 +491,55 @@ class BinanceAdapter:
 
     def _normalize_symbol(self, symbol: str) -> str:
         return str(symbol).strip().upper().replace("-", "").replace("_", "")
+
+    def _normalize_timeframe(self, timeframe: str) -> str:
+        aliases = {
+            "1m": "1m",
+            "3m": "3m",
+            "5m": "5m",
+            "15m": "15m",
+            "30m": "30m",
+            "1h": "1h",
+            "4h": "4h",
+            "1d": "1d",
+        }
+        try:
+            return aliases[str(timeframe).strip()]
+        except KeyError as exc:
+            raise BinanceAdapterError(f"unsupported Binance timeframe: {timeframe}") from exc
+
+    def _normalize_kline_limit(self, limit: int) -> int:
+        normalized = int(limit)
+        if normalized <= 0:
+            raise BinanceAdapterError("kline limit must be positive")
+        return min(normalized, 1000)
+
+    def _parse_kline(self, item: Any) -> Kline:
+        if not isinstance(item, list) or len(item) < 6:
+            raise BinanceAdapterError("Binance kline item has fewer than 6 fields")
+        return Kline(
+            timestamp=self._from_milliseconds(item[0]),
+            open=self._float_text(item[1]),
+            high=self._float_text(item[2]),
+            low=self._float_text(item[3]),
+            close=self._float_text(item[4]),
+            volume=self._float_text(item[5]),
+            is_complete=True,
+        )
+
+    def _to_milliseconds(self, timestamp: int) -> int:
+        timestamp = int(timestamp)
+        if timestamp > 10_000_000_000:
+            return timestamp
+        return timestamp * 1000
+
+    def _from_milliseconds(self, value: Any) -> int:
+        if value in (None, ""):
+            raise BinanceAdapterError("Binance payload missing timestamp")
+        return int(Decimal(str(value))) // 1000
+
+    def _float_text(self, value: Any) -> float:
+        return float(Decimal(str(value)))
 
     def _normalize_side(self, side: str) -> str:
         side = str(getattr(side, "value", side)).strip().lower()

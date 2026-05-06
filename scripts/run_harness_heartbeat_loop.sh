@@ -9,6 +9,7 @@ MAX_IDLE_ROUNDS="${2:-3}"
 QTF_ACTIVATE="/opt/homebrew/Caskroom/miniforge/base/bin/activate"
 QTF_ENV="QTF"
 TASK_SYSTEM_FILE="$PROJECT_ROOT/docs/harness/task-system.md"
+HARNESS_ALLOW_LOCAL_PORTS="${HARNESS_ALLOW_LOCAL_PORTS:-0}"
 
 mkdir -p "$LOG_DIR"
 
@@ -85,6 +86,7 @@ echo "Interval: ${INTERVAL_SECONDS}s"
 echo "Max idle rounds: ${MAX_IDLE_ROUNDS}"
 echo "Python:  $(command -v python)"
 echo "Env:     ${CONDA_DEFAULT_ENV:-unknown}"
+echo "Local ports: ${HARNESS_ALLOW_LOCAL_PORTS}"
 echo "Press Ctrl+C to stop."
 echo
 
@@ -125,9 +127,15 @@ while true; do
 
   idle_rounds=0
 
+  CODEX_SANDBOX_ARGS=(--full-auto)
+  if [[ "$HARNESS_ALLOW_LOCAL_PORTS" == "1" ]]; then
+    CODEX_SANDBOX_ARGS+=(--sandbox danger-full-access -c sandbox_workspace_write.network_access=true)
+    echo "Local port listening enabled for this Codex run via HARNESS_ALLOW_LOCAL_PORTS=1." | tee -a "$log_file"
+  fi
+
   if codex exec \
     --cd "$PROJECT_ROOT" \
-    --full-auto \
+    "${CODEX_SANDBOX_ARGS[@]}" \
     --output-last-message "$final_file" \
     - < "$PROMPT_FILE" 2>&1 | tee -a "$log_file"; then
     update_dashboard "$log_file"

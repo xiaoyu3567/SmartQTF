@@ -1,28 +1,76 @@
+# macOS
 .DS_Store
+.AppleDouble
+.LSOverride
 
+# Python bytecode and caches
 __pycache__/
 *.py[cod]
 *$py.class
-
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
+.pyre/
+.tox/
+.nox/
+.cache/
+
+# Python test and coverage output
 .coverage
+.coverage.*
+coverage.xml
 htmlcov/
 
+# Python packaging/build artifacts
+*.egg-info/
+.eggs/
+build/
+dist/
+pip-wheel-metadata/
+
+# Virtual environments
 .venv/
 venv/
 env/
 ENV/
 
+# Node / Next.js
+node_modules/
+.next/
+out/
+next-env.d.ts
+*.tsbuildinfo
+
+# Package-manager caches
+.npm/
+.pnpm-store/
+.yarn/
+!.yarn/patches/
+!.yarn/plugins/
+!.yarn/releases/
+!.yarn/sdks/
+!.yarn/versions/
+
+# Playwright
+test-results/
+playwright-report/
+blob-report/
+
+# Environment and local secrets
+.env
+.env.*
+!.env.example
+!.env.*.example
+
+# Local editor and tooling state
 .vscode/
 .idea/
+.superpowers/
 
-*.egg-info/
-dist/
-build/
-
+# Project-local generated output
 docs/
 logs/
 chatgpt-*.html
-.superpowers/
+
+# Jupyter
+.ipynb_checkpoints/

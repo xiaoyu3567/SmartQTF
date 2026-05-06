@@ -316,12 +316,44 @@ PROJECT_CAPABILITIES = [
 
 PROJECT_GAP_TASKS = [
     {
-        "ID": "H-OPT-005",
-        "layer": "策略验证产物",
+        "ID": "H-DATA-015",
+        "layer": "Data / Public Multi-Symbol Universe",
         "status": "BLOCKED",
         "priority": "P1",
-        "gap": "真实 OOS / walk-forward / Monte Carlo 验证产物尚未提供，优化候选不能推进生命周期。",
-        "suggestion": "生产环境提供真实验证 JSON 产物后，运行 scripts/validate_strategy_validation_artifacts.py 并确认 latest 报告 artifact_count > 0。",
+        "gap": "Binance public spot full gate 已证明 1d 公开历史约 3183 bars，无法满足当前每 timeframe 10k bars 完成门槛；这是当前唯一 data blocker。",
+        "suggestion": "人工决定改为 timeframe-aware completion gate，或单独调整 1d 完成标准；继续保持 public-only，不读凭据、不调用 broker/私有端点、不伪造完整覆盖。",
+    },
+    {
+        "ID": "H-CONFIG-004",
+        "layer": "Config / Web DIY Runtime",
+        "status": "TODO",
+        "priority": "P1",
+        "gap": "Web 第一版 DIY 还缺少受控配置契约，用户无法通过页面保存/读取 mode、symbols、timeframes、schedule、capital、risk、dry_run 并映射到现有 RuntimeConfig。",
+        "suggestion": "新增 Worker `GET/POST /config` 与 Next.js proxy；默认 dry-run，拒绝 live non-dry-run、路径越界、非法 symbol/timeframe/risk/capital。",
+    },
+    {
+        "ID": "H-MON-024",
+        "layer": "Web Console / Dashboard + DIY Shell",
+        "status": "TODO",
+        "priority": "P1",
+        "gap": "Web Console 需要一个可上线的基础壳，把 status/start/stop/run-once/config 与 Dashboard、DIY Config、Run Results、Optimization Review、System Extensions 五块产品结构连接起来。",
+        "suggestion": "搭建 `/smartqtf` 页面组件和状态处理，接入现有 Web API routes 与新的 config route；保留扩展占位但不启用真实 broker/live order。",
+    },
+    {
+        "ID": "H-MON-025",
+        "layer": "Web Console / Results + Optimization Review",
+        "status": "TODO",
+        "priority": "P1",
+        "gap": "运行结果、K 线可用性、日志、OOS/WF/MC evidence 与人工 review 还需要在 Web 侧形成可读闭环。",
+        "suggestion": "展示 latest run、logs、kline unavailable reason、optimization artifact_count/OOS/WF/MC/reason codes；gate fail 或缺 artifact 时禁用 approve，review 仅写本地审计。",
+    },
+    {
+        "ID": "H-QA-035",
+        "layer": "QA / Web DIY E2E Safety Matrix",
+        "status": "TODO",
+        "priority": "P1",
+        "gap": "Web DIY 最小闭环需要自动化证明：config→run-once→status/logs/kline/optimization→review 能使用当前后端跑完整流程且不越过 dry-run 安全边界。",
+        "suggestion": "新增 `tests/test_smartqtf_web_diy_e2e.py` 与 smoke 脚本覆盖，断言 no secrets、no broker call、no live order、config path 受控。",
     },
 ]
 

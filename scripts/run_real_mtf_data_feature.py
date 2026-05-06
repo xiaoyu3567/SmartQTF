@@ -46,23 +46,58 @@ def _timeframe_data_summary(batch) -> Dict[str, Dict[str, Any]]:
     summary: Dict[str, Dict[str, Any]] = {}
     for timeframe, timeframe_batch in batch.timeframe_batches.items():
         last = timeframe_batch.klines[-1] if timeframe_batch.klines else None
+        last_complete = next(
+            (kline for kline in reversed(timeframe_batch.klines) if getattr(kline, "is_complete", None) is not False),
+            None,
+        )
         summary[timeframe] = {
             "role": timeframe_batch.role,
             "venue": timeframe_batch.venue,
             "bar_count": len(timeframe_batch.klines),
-            "first_timestamp": timeframe_batch.first_timestamp,
-            "last_timestamp": timeframe_batch.last_timestamp,
-            "last_close": None if last is None else last.close,
-            "last_is_complete": None if last is None else last.is_complete,
+            "raw_first_timestamp": timeframe_batch.first_timestamp,
+            "raw_last_timestamp": timeframe_batch.last_timestamp,
+            "raw_last_close": None if last is None else last.close,
+            "raw_last_is_complete": None if last is None else last.is_complete,
+            "last_complete_timestamp": None if last_complete is None else last_complete.timestamp,
+            "last_complete_close": None if last_complete is None else last_complete.close,
         }
     return summary
+
+
+def _quality_report_payload(quality_report) -> Dict[str, Any]:
+    payload = _payload(quality_report)
+    for report in payload.get("timeframe_reports", {}).values():
+        raw_last_timestamp = report.get("last_timestamp")
+        report["raw_last_timestamp"] = raw_last_timestamp
+        if report.get("has_incomplete_last_bar"):
+            interval = report.get("interval_seconds")
+            report["last_complete_timestamp"] = (
+                raw_last_timestamp - interval
+                if raw_last_timestamp is not None and interval is not None
+                else None
+            )
+        else:
+            report["last_complete_timestamp"] = raw_last_timestamp
+    return payload
+
+
+def _feature_payload(feature_snapshot) -> Dict[str, Any]:
+    payload = _payload(feature_snapshot)
+    for ref in payload.get("quality_report_refs", {}).values():
+        raw_last_timestamp = ref.get("last_timestamp")
+        ref["raw_last_timestamp"] = raw_last_timestamp
+        # The FeatureSnapshot effective timestamp is stored per computed timeframe.
+        snapshot = payload.get("timeframe_snapshots", {}).get(ref.get("timeframe"), {})
+        ref["last_complete_timestamp"] = snapshot.get("timestamp")
+    return payload
 
 
 def _feature_summary(feature_snapshot) -> Dict[str, Any]:
     rows: Dict[str, Any] = {}
     for timeframe, snapshot in feature_snapshot.timeframe_snapshots.items():
         rows[timeframe] = {
-            "timestamp": snapshot.timestamp,
+            "feature_timestamp": snapshot.timestamp,
+            "effective_bar_timestamp": snapshot.timestamp,
             "input_bar_count": snapshot.input_bar_count,
             "effective_index": snapshot.effective_index,
             "is_complete_bar": snapshot.is_complete_bar,
@@ -80,7 +115,7 @@ def _feature_summary(feature_snapshot) -> Dict[str, Any]:
         "snapshot_id": feature_snapshot.snapshot_id,
         "symbol": feature_snapshot.symbol,
         "execution_timeframe": feature_snapshot.execution_timeframe,
-        "timestamp": feature_snapshot.timestamp,
+        "feature_timestamp": feature_snapshot.timestamp,
         "timeframes": rows,
         "alignment_features": feature_snapshot.alignment_features,
     }
@@ -118,7 +153,10 @@ def _build_regime_layer(feature_snapshot) -> Dict[str, Any]:
     rsi = execution.get("rsi")
     atr = execution.get("atr")
     structure_state = execution.get("market_structure.structure_state")
-    if structure_state == "trend" or execution_bias in {"bullish", "bearish"}:
+    breakout_direction = execution.get("market_structure.breakout_direction")
+    if structure_state == "range" and execution_bias in {"bullish", "bearish"}:
+        regime = "weak_trend" if breakout_direction not in {"up", "down"} else "trend"
+    elif structure_state in {"trend", "breakout"}:
         regime = "trend"
     elif structure_state:
         regime = structure_state
@@ -151,12 +189,14 @@ def _build_regime_layer(feature_snapshot) -> Dict[str, Any]:
         reason_codes.append("regime_context_ok")
     return {
         "snapshot_id": f"real-mtf-regime:{summary['snapshot_id']}",
-        "timestamp": summary["timestamp"],
+        "timestamp": summary["feature_timestamp"],
         "symbol": summary["symbol"],
         "execution_timeframe": execution_tf,
         "aggregate_regime": {
             "regime": regime,
             "direction": execution_bias,
+            "structure_state": structure_state,
+            "breakout_direction": breakout_direction,
             "volatility_state": volatility_state,
             "tradability": tradability,
             "confidence": 0.72 if tradability == "tradable" else 0.55,
@@ -182,12 +222,14 @@ def _build_regime_layer(feature_snapshot) -> Dict[str, Any]:
 
 def _build_strategy_route_layer(regime_layer: Dict[str, Any]) -> Dict[str, Any]:
     aggregate = regime_layer["aggregate_regime"]
-    route_name = "ma_crossover_trend" if aggregate["regime"] == "trend" else "observe_range"
+    route_mode = "observe_only" if aggregate["tradability"] == "observe_only" else "trade" if aggregate["tradability"] == "tradable" else "blocked"
+    route_name = "observe_only" if route_mode == "observe_only" else "ma_crossover_trend" if aggregate["regime"] in {"trend", "weak_trend"} else "observe_range"
     return {
         "route_id": f"real-route:{regime_layer['symbol']}:{regime_layer['execution_timeframe']}:{route_name}",
         "symbol": regime_layer["symbol"],
         "timeframe": regime_layer["execution_timeframe"],
         "selected_strategy": route_name,
+        "route_mode": route_mode,
         "strategy_id": "ma_crossover",
         "strategy_version": "1.0",
         "reason_codes": [f"regime:{aggregate['regime']}", f"tradability:{aggregate['tradability']}"],
@@ -215,7 +257,7 @@ def _build_strategy_signal_layer(feature_snapshot, regime_layer: Dict[str, Any],
         "strategy_version": route_layer["strategy_version"],
         "symbol": feature_summary["symbol"],
         "timeframe": execution_tf,
-        "timestamp": feature_summary["timestamp"],
+        "timestamp": feature_summary["feature_timestamp"],
         "raw_signal": {
             "action": raw_action,
             "side": raw_action if raw_action in {"buy", "sell"} else None,
@@ -243,12 +285,19 @@ def _build_strategy_signal_layer(feature_snapshot, regime_layer: Dict[str, Any],
     }
 
 
-def _build_decision_layer(signal_layer: Dict[str, Any], regime_layer: Dict[str, Any]) -> Dict[str, Any]:
+def _build_decision_layer(
+    signal_layer: Dict[str, Any],
+    regime_layer: Dict[str, Any],
+    *,
+    force_forward_to_capital: bool = False,
+) -> Dict[str, Any]:
     signal = signal_layer["filtered_signal"]
-    if signal["should_send_order"]:
+    if signal["should_send_order"] or force_forward_to_capital:
         action = "APPROVE_TRADE_INTENT"
         forward = True
         reason_codes = list(signal["reason_codes"]) + ["decision_policy_approved"]
+        if force_forward_to_capital and not signal["should_send_order"]:
+            reason_codes.append("forced_forward_to_capital_for_layer_validation")
         trade_intent = {
             "trade_intent_id": f"{signal_layer['signal_id']}:trade-intent",
             "symbol": signal_layer["symbol"],
@@ -381,11 +430,16 @@ def _build_execution_layer(risk_layer: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
-def _build_downstream_layers(feature_snapshot, account_equity: float) -> Dict[str, Any]:
+def _build_downstream_layers(
+    feature_snapshot,
+    account_equity: float,
+    *,
+    force_forward_to_capital: bool = False,
+) -> Dict[str, Any]:
     regime = _build_regime_layer(feature_snapshot)
     route = _build_strategy_route_layer(regime)
     signal = _build_strategy_signal_layer(feature_snapshot, regime, route)
-    decision = _build_decision_layer(signal, regime)
+    decision = _build_decision_layer(signal, regime, force_forward_to_capital=force_forward_to_capital)
     capital = _build_capital_layer(decision, account_equity)
     risk = _build_risk_layer(decision, capital)
     execution = _build_execution_layer(risk)
@@ -408,6 +462,7 @@ def run_real_data_feature(
     limit: int,
     account_equity: float = DEFAULT_ACCOUNT_EQUITY,
     output_path: Optional[Path] = None,
+    force_forward_to_capital: bool = False,
 ) -> Dict[str, Any]:
     adapter = OKXAdapter(require_credentials=False)
     normalized_symbol = adapter._normalize_symbol(symbol)
@@ -431,7 +486,11 @@ def run_real_data_feature(
             snapshot_id=f"real-okx:{normalized_symbol}:{execution_timeframe}:{int(datetime.now(timezone.utc).timestamp())}",
         )
     )
-    downstream_layers = _build_downstream_layers(feature_snapshot, account_equity)
+    downstream_layers = _build_downstream_layers(
+        feature_snapshot,
+        account_equity,
+        force_forward_to_capital=force_forward_to_capital,
+    )
 
     artifact = {
         "run": {
@@ -448,11 +507,11 @@ def run_real_data_feature(
             "summary": _timeframe_data_summary(data_batch),
             "payload": _payload(data_batch),
         },
-        "data_quality": _payload(quality_report),
+        "data_quality": _quality_report_payload(quality_report),
         "feature_layer": {
             "output_type": "MultiTimeframeFeatureSnapshot",
             "summary": _feature_summary(feature_snapshot),
-            "payload": _payload(feature_snapshot),
+            "payload": _feature_payload(feature_snapshot),
         },
         **downstream_layers,
     }
@@ -498,6 +557,11 @@ def main() -> int:
     )
     parser.add_argument("--limit", type=int, default=120, help="Bars per timeframe")
     parser.add_argument("--account-equity", type=float, default=DEFAULT_ACCOUNT_EQUITY, help="Dry-run account equity for capital/risk sizing")
+    parser.add_argument(
+        "--force-forward-to-capital",
+        action="store_true",
+        help="Force decision forward for validating capital/risk/execution dry-run layers even when signal is wait/no_trade",
+    )
     parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT_PATH, help="JSON artifact output path")
     parser.add_argument("--print-full", action="store_true", help="For Feature/DATA sections, print full payload instead of summary")
     parser.add_argument("--include-data", action="store_true", help="Also print DATA and DATA QUALITY sections")
@@ -511,6 +575,7 @@ def main() -> int:
         limit=args.limit,
         account_equity=args.account_equity,
         output_path=args.output,
+        force_forward_to_capital=args.force_forward_to_capital,
     )
 
     print(f"artifact_path={args.output}")

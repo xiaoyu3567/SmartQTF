@@ -9,6 +9,8 @@ from pydantic import ValidationError
 
 from quant.optimization import StrategyVersionGate
 from quant.schemas import (
+    MonteCarloSimulationMethod,
+    MonteCarloValidation,
     StrategyPromotionAction,
     StrategyValidationArtifact,
     StrategyValidationMetrics,
@@ -43,6 +45,17 @@ def make_metrics(**overrides):
         "max_drawdown": 0.08,
         "win_rate": 0.58,
         "sharpe_ratio": 1.2,
+        "monte_carlo_validation": MonteCarloValidation(
+            method=MonteCarloSimulationMethod.HYBRID,
+            run_count=500,
+            perturbation_dimensions=[
+                "trade_order_shuffle",
+                "return_perturbation",
+                "slippage_fee_perturbation",
+            ],
+            seed=42,
+            survival_threshold=0.8,
+        ),
     }
     values.update(overrides)
     return StrategyValidationMetrics(**values)
@@ -182,6 +195,57 @@ def test_strategy_promotion_gate_rejects_missing_or_failed_anti_overfit_checks()
     ]
 
 
+def test_strategy_promotion_gate_rejects_missing_monte_carlo_metadata():
+    gate = StrategyVersionGate(
+        require_out_of_sample=True,
+        min_walk_forward_windows=1,
+        min_walk_forward_pass_rate=0.5,
+        min_monte_carlo_survival_rate=0.8,
+    )
+
+    decision = gate.evaluate(
+        candidate=make_version(),
+        metrics=make_metrics(
+            validation_slices=[
+                make_slice(StrategyValidationSliceKind.OUT_OF_SAMPLE, "oos-2024"),
+                make_slice(StrategyValidationSliceKind.WALK_FORWARD, "wf-1"),
+            ],
+            monte_carlo_survival_rate=0.91,
+            monte_carlo_validation=None,
+        ),
+        decision_id="promote-anti-overfit-003",
+        generated_at=1710007200,
+    )
+
+    assert decision.action == StrategyPromotionAction.REJECT
+    assert decision.reason_codes == ["missing_monte_carlo_validation"]
+
+
+def test_strategy_promotion_gate_rejects_monte_carlo_survival_rate_below_threshold():
+    gate = StrategyVersionGate(
+        require_out_of_sample=True,
+        min_walk_forward_windows=1,
+        min_walk_forward_pass_rate=0.5,
+        min_monte_carlo_survival_rate=0.8,
+    )
+
+    decision = gate.evaluate(
+        candidate=make_version(),
+        metrics=make_metrics(
+            validation_slices=[
+                make_slice(StrategyValidationSliceKind.OUT_OF_SAMPLE, "oos-2024"),
+                make_slice(StrategyValidationSliceKind.WALK_FORWARD, "wf-1"),
+            ],
+            monte_carlo_survival_rate=0.72,
+        ),
+        decision_id="promote-anti-overfit-004",
+        generated_at=1710007200,
+    )
+
+    assert decision.action == StrategyPromotionAction.REJECT
+    assert decision.reason_codes == ["monte_carlo_survival_rate_below_threshold"]
+
+
 def test_strategy_validation_slice_rejects_invalid_values():
     try:
         make_slice(StrategyValidationSliceKind.WALK_FORWARD, "")
@@ -230,7 +294,7 @@ def test_strategy_validation_artifact_round_trip_and_rejects_empty_identity():
     restored = StrategyValidationArtifact.from_payload(payload)
 
     assert payload["metrics"]["report_id"] == "oos-wf-mc-001"
-    assert restored == artifact
+    assert restored.to_payload() == payload
 
     try:
         StrategyValidationArtifact(

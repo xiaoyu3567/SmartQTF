@@ -53,10 +53,17 @@ class OKXAdapter:
         require_credentials: bool = True,
         logger: Optional[logging.Logger] = None,
     ):
-        self.api_key = self._clean_secret(api_key if api_key is not None else os.getenv("OKX_API_KEY"))
-        self.secret = self._clean_secret(secret if secret is not None else os.getenv("OKX_SECRET"))
+        should_load_env_credentials = require_credentials
+        self.api_key = self._clean_secret(
+            api_key if api_key is not None else (os.getenv("OKX_API_KEY") if should_load_env_credentials else None)
+        )
+        self.secret = self._clean_secret(
+            secret if secret is not None else (os.getenv("OKX_SECRET") if should_load_env_credentials else None)
+        )
         self.passphrase = self._clean_secret(
-            passphrase if passphrase is not None else os.getenv("OKX_PASSPHRASE")
+            passphrase
+            if passphrase is not None
+            else (os.getenv("OKX_PASSPHRASE") if should_load_env_credentials else None)
         )
         self.base_url = base_url.rstrip("/")
         self.timeout = timeout
@@ -225,9 +232,9 @@ class OKXAdapter:
             "limit": limit,
         }
         if start_ts is not None:
-            params["after"] = self._to_milliseconds(start_ts)
+            params["before"] = max(0, self._to_milliseconds(start_ts) - 1)
         if end_ts is not None:
-            params["before"] = self._to_milliseconds(end_ts)
+            params["after"] = self._to_milliseconds(end_ts) + 1
 
         response = self._request("GET", "/api/v5/market/candles", params=params, auth=False)
         klines = [self._parse_kline(item) for item in response.get("data", [])]

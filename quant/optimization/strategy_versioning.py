@@ -157,6 +157,8 @@ class StrategyVersionGate:
         if self.min_monte_carlo_survival_rate is not None:
             if metrics.monte_carlo_survival_rate is None:
                 reason_codes.append("missing_monte_carlo_validation")
+            elif metrics.monte_carlo_validation is None:
+                reason_codes.append("missing_monte_carlo_validation")
             elif (
                 metrics.monte_carlo_survival_rate
                 < self.min_monte_carlo_survival_rate

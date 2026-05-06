@@ -1,0 +1,66 @@
+{
+  "_comment": "Example only. Do not treat this file as a real validation source report; copy the schema into a separate non-example path before generating artifacts.",
+  "report_id": "example-review-validation-001",
+  "strategy_id": "ma_crossover",
+  "candidate_version": "review-2026-05-04-BTCUSDT-ma_crossover",
+  "symbol": "BTCUSDT",
+  "generated_at": 1777827600,
+  "source_report_id": "daily-review-2026-05-04",
+  "summary": {
+    "trade_count": 36,
+    "total_net_pnl": 42.5,
+    "max_drawdown": 1.8,
+    "win_rate": 0.59,
+    "sharpe_ratio": 1.24
+  },
+  "validation_slices": [
+    {
+      "name": "oos-2026-q1",
+      "kind": "out_of_sample",
+      "trade_count": 12,
+      "total_net_pnl": 18.0,
+      "max_drawdown": 0.9,
+      "win_rate": 0.58,
+      "sharpe_ratio": 1.1
+    },
+    {
+      "name": "wf-2026-01",
+      "kind": "walk_forward",
+      "trade_count": 8,
+      "total_net_pnl": 10.0,
+      "max_drawdown": 0.9,
+      "win_rate": 0.6,
+      "sharpe_ratio": 1.0
+    },
+    {
+      "name": "wf-2026-02",
+      "kind": "walk_forward",
+      "trade_count": 8,
+      "total_net_pnl": 9.5,
+      "max_drawdown": 0.8,
+      "win_rate": 0.61,
+      "sharpe_ratio": 1.02
+    },
+    {
+      "name": "wf-2026-03",
+      "kind": "walk_forward",
+      "trade_count": 8,
+      "total_net_pnl": 8.0,
+      "max_drawdown": 0.85,
+      "win_rate": 0.57,
+      "sharpe_ratio": 0.97
+    }
+  ],
+  "monte_carlo_survival_rate": 0.83,
+  "monte_carlo_validation": {
+    "method": "hybrid",
+    "run_count": 500,
+    "perturbation_dimensions": [
+      "trade_order_shuffle",
+      "return_perturbation",
+      "slippage_fee_perturbation"
+    ],
+    "seed": 42,
+    "survival_threshold": 0.8
+  }
+}

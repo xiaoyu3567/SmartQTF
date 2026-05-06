@@ -1,5 +1,5 @@
 from enum import Enum
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel, Field
 
@@ -24,11 +24,28 @@ class StrategyPromotionAction(str, Enum):
     REJECT = "reject"
 
 
+class StrategyPromotionReviewStatus(str, Enum):
+    SKIPPED = "SKIPPED"
+    FAIL = "FAIL"
+    PASS = "PASS"
+    READY_FOR_MANUAL_REVIEW = "READY_FOR_MANUAL_REVIEW"
+    APPROVED_DRY_RUN = "APPROVED_DRY_RUN"
+    REJECTED_DRY_RUN = "REJECTED_DRY_RUN"
+
+
 class StrategyValidationSliceKind(str, Enum):
     IN_SAMPLE = "in_sample"
     OUT_OF_SAMPLE = "out_of_sample"
     WALK_FORWARD = "walk_forward"
     MONTE_CARLO = "monte_carlo"
+
+
+class MonteCarloSimulationMethod(str, Enum):
+    TRADE_SHUFFLE = "trade_shuffle"
+    BOOTSTRAP = "bootstrap"
+    RETURN_PERTURBATION = "return_perturbation"
+    SLIPPAGE_FEE_PERTURBATION = "slippage_fee_perturbation"
+    HYBRID = "hybrid"
 
 
 class StrategyVersionBase(SmartQTFModel):
@@ -65,6 +82,7 @@ class StrategyValidationMetricsBase(SmartQTFModel):
     sharpe_ratio: Optional[float] = None
     validation_slices: List["StrategyValidationSliceBase"] = Field(default_factory=list)
     monte_carlo_survival_rate: Optional[float] = Field(default=None, ge=0.0, le=1.0)
+    monte_carlo_validation: Optional["MonteCarloValidationBase"] = None
 
     @classmethod
     def counts_must_be_non_negative(cls, value):
@@ -113,6 +131,41 @@ class StrategyPromotionDecisionBase(SmartQTFModel):
         return self.action == StrategyPromotionAction.APPROVE
 
 
+class StrategyPromotionReviewRecordBase(SmartQTFModel):
+    review_id: str
+    strategy_id: str
+    candidate_version: str
+    symbol: Optional[str] = None
+    artifact_ids: List[str] = Field(default_factory=list)
+    artifact_paths: List[str] = Field(default_factory=list)
+    candidate: Dict[str, Any] = Field(default_factory=dict)
+    gate_decision: Dict[str, Any] = Field(default_factory=dict)
+    manual_decision: StrategyPromotionAction
+    reviewer_note: str = Field(default="", max_length=1000)
+    reviewer: Optional[str] = None
+    reviewed_at: int
+    reason_codes: List[str] = Field(default_factory=list)
+    evidence: Dict[str, Any] = Field(default_factory=dict)
+    safety_flags: Dict[str, bool] = Field(default_factory=dict)
+    dry_run: bool = True
+    live_deployment_triggered: bool = False
+    trace: Optional[TraceContext] = None
+
+    @classmethod
+    def non_empty_string(cls, value):
+        if not value:
+            raise ValueError("value must not be empty")
+        return value
+
+    @classmethod
+    def artifact_ids_must_not_be_empty(cls, value):
+        if not value:
+            raise ValueError("artifact_ids must not be empty")
+        if any(not item for item in value):
+            raise ValueError("artifact_ids must not contain empty values")
+        return value
+
+
 class SymbolOptimizationQueueRecordBase(SmartQTFModel):
     queue_id: str
     symbol: str
@@ -157,6 +210,22 @@ class StrategyValidationSliceBase(SmartQTFModel):
         return value
 
 
+class MonteCarloValidationBase(SmartQTFModel):
+    method: MonteCarloSimulationMethod
+    run_count: int = Field(ge=1)
+    perturbation_dimensions: List[str] = Field(default_factory=list)
+    seed: Optional[int] = None
+    survival_threshold: float = Field(ge=0.0, le=1.0)
+
+    @classmethod
+    def perturbation_dimensions_must_not_be_empty(cls, value):
+        if not value:
+            raise ValueError("perturbation_dimensions must not be empty")
+        if any(not item for item in value):
+            raise ValueError("perturbation_dimensions must not contain empty values")
+        return value
+
+
 if hasattr(BaseModel, "model_validate"):
 
     class StrategyValidationSlice(StrategyValidationSliceBase):
@@ -181,6 +250,12 @@ if hasattr(BaseModel, "model_validate"):
         def validate_non_empty_string(cls, value):
             return cls.non_empty_string(value)
 
+    class MonteCarloValidation(MonteCarloValidationBase):
+        @field_validator("perturbation_dimensions")
+        @classmethod
+        def validate_perturbation_dimensions(cls, value):
+            return cls.perturbation_dimensions_must_not_be_empty(value)
+
     class StrategyValidationMetrics(StrategyValidationMetricsBase):
         @field_validator("trade_count")
         @classmethod
@@ -202,6 +277,17 @@ if hasattr(BaseModel, "model_validate"):
 
     class StrategyPromotionDecision(StrategyPromotionDecisionBase):
         metrics: StrategyValidationMetrics
+
+    class StrategyPromotionReviewRecord(StrategyPromotionReviewRecordBase):
+        @field_validator("review_id", "strategy_id", "candidate_version")
+        @classmethod
+        def validate_non_empty_string(cls, value):
+            return cls.non_empty_string(value)
+
+        @field_validator("artifact_ids")
+        @classmethod
+        def validate_artifact_ids(cls, value):
+            return cls.artifact_ids_must_not_be_empty(value)
 
     class SymbolOptimizationQueueRecord(SymbolOptimizationQueueRecordBase):
         candidate: StrategyVersion
@@ -233,6 +319,11 @@ else:
         def validate_non_empty_string(cls, value):
             return cls.non_empty_string(value)
 
+    class MonteCarloValidation(MonteCarloValidationBase):
+        @validator("perturbation_dimensions")
+        def validate_perturbation_dimensions(cls, value):
+            return cls.perturbation_dimensions_must_not_be_empty(value)
+
     class StrategyValidationMetrics(StrategyValidationMetricsBase):
         @validator("trade_count")
         def validate_trade_count(cls, value):
@@ -251,6 +342,15 @@ else:
 
     class StrategyPromotionDecision(StrategyPromotionDecisionBase):
         metrics: StrategyValidationMetrics
+
+    class StrategyPromotionReviewRecord(StrategyPromotionReviewRecordBase):
+        @validator("review_id", "strategy_id", "candidate_version")
+        def validate_non_empty_string(cls, value):
+            return cls.non_empty_string(value)
+
+        @validator("artifact_ids")
+        def validate_artifact_ids(cls, value):
+            return cls.artifact_ids_must_not_be_empty(value)
 
     class SymbolOptimizationQueueRecord(SymbolOptimizationQueueRecordBase):
         candidate: StrategyVersion

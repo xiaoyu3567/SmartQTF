@@ -1,0 +1,128 @@
+{
+  "name": "paper-btc-usdt-multitimeframe",
+  "source": "paper",
+  "markets": [
+    {
+      "symbol": "BTCUSDT",
+      "timeframe": "5m",
+      "asset_class": "crypto",
+      "enabled": true,
+      "provider": "mock",
+      "metadata": {
+        "venue": "simulated",
+        "notes": "Paper runtime sample with deterministic local multi-timeframe data."
+      }
+    }
+  ],
+  "strategies": [
+    {
+      "symbol": "BTCUSDT",
+      "strategy": "ma_crossover",
+      "route": "default",
+      "version": "1.0",
+      "parameters": {
+        "fast_window": 3,
+        "slow_window": 5,
+        "strategy_id": "paper_btc_mtf_ma"
+      },
+      "routes": [
+        {
+          "route": "trend",
+          "strategy": "ma_crossover",
+          "version": "1.0",
+          "parameters": {
+            "fast_window": 3,
+            "slow_window": 5,
+            "strategy_id": "paper_btc_mtf_ma_trend"
+          }
+        },
+        {
+          "route": "default",
+          "strategy": "ma_crossover",
+          "version": "1.0",
+          "parameters": {
+            "fast_window": 5,
+            "slow_window": 13,
+            "strategy_id": "paper_btc_mtf_ma_fallback"
+          }
+        }
+      ]
+    }
+  ],
+  "risk": {
+    "risk_plugin": "default",
+    "kill_switch_enabled": false,
+    "daily_loss_limit_pct": 0.03,
+    "consecutive_loss_limit": 3,
+    "api_failure_rate_limit": 0.2,
+    "max_position_size": 0.2,
+    "max_drawdown": 0.1,
+    "per_symbol_limits": {
+      "BTCUSDT": 0.2
+    }
+  },
+  "broker": {
+    "mode": "paper",
+    "broker_plugin": "simulated",
+    "account_id": null,
+    "order_log_path": "logs/paper-mtf/orders.jsonl",
+    "settings": {
+      "slippage_bps": 2,
+      "allow_live_orders": false
+    }
+  },
+  "environment": {
+    "tier": "paper",
+    "external_exchange_access": false,
+    "private_api_read": false,
+    "live_order_submission": false,
+    "dry_run": true,
+    "requires_proxy": false,
+    "requires_credentials": false,
+    "requires_manual_preflight": false,
+    "requires_human_approval": false,
+    "tests_default_skipped": false,
+    "credential_mode": "none"
+  },
+  "logging": {
+    "decision_log_path": "logs/paper-mtf/decisions.jsonl",
+    "order_log_path": "logs/paper-mtf/orders.jsonl",
+    "fill_log_path": "logs/paper-mtf/fills.jsonl",
+    "pipeline_report_dir": "logs/paper-mtf/pipeline-runs"
+  },
+  "scan": {
+    "enabled": true,
+    "interval_seconds": 600,
+    "candidate_symbols": [
+      "BTCUSDT"
+    ],
+    "holding_symbols": [],
+    "default_timeframe": "5m"
+  },
+  "multi_timeframe": {
+    "enabled": true,
+    "execution_timeframe": "5m",
+    "context_timeframes": [
+      "15m",
+      "1h",
+      "4h"
+    ],
+    "bar_limits": {
+      "5m": 120,
+      "15m": 120,
+      "1h": 120,
+      "4h": 120
+    },
+    "default_bar_limit": 120,
+    "venue": "fixture",
+    "metadata": {
+      "purpose": "paper-runtime-multitimeframe-example"
+    }
+  },
+  "registry_plugins": {},
+  "metadata": {
+    "initial_balance": 10000.0,
+    "environment": "paper",
+    "contains_real_credentials": false
+  }
+}

@@ -261,8 +261,8 @@ def test_okx_adapter_returns_sorted_typed_kline_batch():
         "instId": "BTC-USDT",
         "bar": "1m",
         "limit": 2,
-        "after": 1700000000000,
-        "before": 1700000060000,
+        "before": 1699999999999,
+        "after": 1700000060001,
     }
 
 
